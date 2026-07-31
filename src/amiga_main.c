@@ -8,7 +8,7 @@
 #include <clib/icon_protos.h>
 #include <workbench/startup.h>
 
-const char* ID = "$VER: FitzQuake 1.0.01\r\n";
+const char* ID = "$VER: FitzQuake 0.80.01\r\n";
 
 /**
  * Force GCC to emit a symbol named EXACTLY "errno" in the final object file.
@@ -60,6 +60,24 @@ int main(int argc, char** argv) {
 		// Never returns.
 		quake_main(argc, argv, path);
 	} else {
+		// Started from WB.
+		struct DiskObject *diskObject;
+		char *toolType;
+		int i;
+
+        // These command line arguments are flags
+        char *flags[] = {
+            "-nosound",
+            "-nocdaudio",
+            "-rogue",
+            "-hipnotic"
+        };
+
+        // These command line arguments each take a value
+        char *settings[] = {
+            "-game", "-hunksize", "-zone"
+        };
+
 		// Get path
 		NameFromLock(_WBenchMsg->sm_ArgList[0].wa_Lock, (STRPTR )path, MAX_SYSTEM_PATH);
 
@@ -67,8 +85,31 @@ int main(int argc, char** argv) {
 		lock = CurrentDir(_WBenchMsg->sm_ArgList[0].wa_Lock);
 
 		// Setup command line arguments.
-		myargv[myargc] = (char*) malloc(strlen("FitzQuake") + 1);
+		myargv[myargc] = (char*)malloc(strlen("FitzQuake") + 1);
 		strcpy(myargv[myargc++], "FitzQuake");
+
+        // Process Tooltypes.
+        diskObject = GetDiskObject((char*)_WBenchMsg->sm_ArgList[0].wa_Name);
+
+        if (diskObject != NULL) {
+    		// Process DOS command line flags.
+    		for (i = 0; i < sizeof(flags)/sizeof(flags[0]); i++) {
+    			if (FindToolType(diskObject->do_ToolTypes, &flags[i][1]) != NULL) {
+    				myargv[myargc] = (char *)malloc(strlen(flags[i])+1);
+                    strcpy(myargv[myargc++], flags[i]);
+    			}
+    		}
+
+    		// Process DOS command line settings.
+    		for (i = 0; i < sizeof(settings)/sizeof(settings[0]); i++) {
+    			if ((toolType = FindToolType(diskObject->do_ToolTypes, &settings[i][1])) != NULL) {
+    				myargv[myargc] = (char *)malloc(strlen(settings[i])+1);
+    				strcpy(myargv[myargc++], settings[i]);
+                    myargv[myargc] = (char *)malloc(strlen(toolType)+1);
+    				strcpy(myargv[myargc++], toolType);
+    			}
+    		}
+        }
 
 		// Clean up on exit.
 		atexit(amiga_exit);

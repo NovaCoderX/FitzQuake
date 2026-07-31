@@ -684,7 +684,6 @@ typedef struct tab_s
 tab_t	*tablist;
 
 //defs from elsewhere
-extern qboolean	keydown[256];
 typedef struct cmd_function_s
 {
 	struct cmd_function_s	*next;
@@ -758,97 +757,6 @@ void BuildTabList (char *partial)
 	for (alias=cmd_alias ; alias ; alias=alias->next)
 		if (!Q_strncmp (partial, alias->name, len))
 			AddToTabList (alias->name, "alias");
-}
-
-/*
-============
-Con_TabComplete -- johnfitz
-============
-*/
-void Con_TabComplete (void)
-{
-	char		partial[MAXCMDLINE];
-	char		*match;
-	static char	*c;
-	tab_t		*t;
-	int			mark, i;
-
-// if editline is empty, return
-	if (key_lines[edit_line][1] == 0)
-		return;
-
-// get partial string (space -> cursor)
-	if (!Q_strlen(key_tabpartial)) //first time through, find new insert point. (Otherwise, use previous.)
-	{
-		//work back from cursor until you find a space, quote, semicolon, or prompt
-		c = key_lines[edit_line] + key_linepos - 1; //start one space left of cursor
-		while (*c!=' ' && *c!='\"' && *c!=';' && c!=key_lines[edit_line])
-			c--;
-		c++; //start 1 char after the seperator we just found
-	}
-	for (i = 0; c + i < key_lines[edit_line] + key_linepos; i++)
-		partial[i] = c[i];
-	partial[i] = 0;
-
-//if partial is empty, return
-	if (partial[0] == 0)
-		return;
-
-// find a match
-	mark = Hunk_LowMark();
-	if (!Q_strlen(key_tabpartial)) //first time through
-	{
-		Q_strcpy (key_tabpartial, partial);
-		BuildTabList (key_tabpartial);
-
-		if (!tablist)
-			return;
-
-		//print list
-		t = tablist->prev; //back through list becuase it's in reverse order
-		do
-		{
-			Con_SafePrintf("   %s (%s)\n", t->name, t->type);
-			t = t->prev;
-		} while (t != tablist->prev);
-
-		//get first match
-		match = tablist->prev->name;
-	}
-	else
-	{
-		BuildTabList (key_tabpartial);
-
-		if (!tablist)
-			return;
-
-		//find current match -- can't save a pointer because the list will be rebuilt each time
-		t = tablist;
-		do
-		{
-			if (!Q_strncmp(t->name, partial, strlen(t->name)))
-				break;
-			t = t->next;
-		} while (t != tablist);
-
-		//use next or prev to find next match (reverse since list is backwards)
-		match = keydown[K_SHIFT] ? t->next->name : t->prev->name;
-	}
-	Hunk_FreeToLowMark(mark); //it's okay to free it here becuase match is a pointer to persistent data
-
-// insert new match into edit line
-	Q_strcpy (partial, match); //first copy match string
-	Q_strcat (partial, key_lines[edit_line] + key_linepos); //then add chars after cursor
-	Q_strcpy (c, partial); //now copy all of this into edit line
-	key_linepos = c - key_lines[edit_line] + Q_strlen(match); //set new cursor position
-
-// if cursor is at end of string, let's append a space to make life easier
-	if (key_lines[edit_line][key_linepos] == 0)
-	{
-		key_lines[edit_line][key_linepos] = ' ';
-		key_linepos++;
-		key_lines[edit_line][key_linepos] = 0;
-	}
 }
 
 /*
@@ -1022,7 +930,7 @@ void Con_DrawConsole (int lines, qboolean drawinput)
 
 //draw version number in bottom right
 	y+=8;
-	sprintf (ver, "FitzQuake %1.2f"/*" beta"*/, (float)FITZQUAKE_VERSION);
+	sprintf (ver, "FitzQuake %1.2f", (float)FITZQUAKE_VERSION);
 	for (x=0; x<strlen(ver); x++)
 		Draw_Character ((con_linewidth-strlen(ver)+x+2)<<3, y, ver[x] /*+ 128*/);
 }

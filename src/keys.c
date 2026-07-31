@@ -45,7 +45,6 @@ qboolean consolekeys[256];	// if true, can't be rebound while in console
 qboolean menubound[256];	// if true, can't be rebound while in menu
 int keyshift[256];		// key to map to if shift held down in console
 int key_repeats[256];	// if > 1, it is autorepeating
-qboolean keydown[256];
 
 static byte key_map[SDLK_LAST];
 
@@ -119,6 +118,7 @@ void Key_Console(int key) {
 			key_lines[edit_line][key_linepos] = 0;
 			return;
 		}
+		return;
 	}
 
 	if (key == K_BACKSPACE || key == K_LEFTARROW) {
@@ -644,8 +644,6 @@ static void ProcessEvent(int key, qboolean down) {
 	char* kb;
 	char cmd[1024];
 
-	keydown[key] = down;
-
 	if (!down)
 		key_repeats[key] = 0;
 
@@ -801,7 +799,6 @@ void Key_ClearStates(void) {
 	int i;
 
 	for (i = 0; i < 256; i++) {
-		keydown[i] = false;
 		key_repeats[i] = 0;
 	}
 }

@@ -19,9 +19,9 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
-// gl_vidnt.c -- SDL 1.2 GL vid component
+// gl_vidsdl.c -- SDL 1.2 GL vid component
 //
-// AMIGA 68k / RTG PORT -- NovaCoder
+// AMIGA 68k PORT -- NovaCoder
 //
 // Changes from the stock Kristian Duske SDL port, all marked NOVA:
 //
@@ -35,35 +35,40 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 //  3.  Vsync / SDL_GL_SWAP_CONTROL removed. WGL/GLX concept, no RTG analogue.
 //  4.  Anisotropic filtering detection removed (enums may not exist in the
 //      Mesa 4.1 headers, and swrast does not implement it).
-//  5.  Hardware gamma removed. See VID_Gamma_Init for the TODO.
+//  5.  Hardware gamma removed.
 //  6.  GL attributes are now requested explicitly before every mode set.
 //  7.  Assorted robustness fixes: real SDL_SetVideoMode failure detection,
 //      NULL-safe glGetString use, SDL_ListModes "any mode" handling,
 //      -mode range check, graceful fallback to windowed.
 //
-// Correctness pass only -- performance tuning for Nova-Mesa/PiStorm is
-// deliberately left for a later revision. Spots worth revisiting are
-// tagged with "PERF:".
 
 #include "quakedef.h"
 
 #define MAX_MODE_LIST       64      // NOVA: was 600, we will never enumerate that many
 #define WARP_WIDTH          320
 #define WARP_HEIGHT         200
-#define MAXWIDTH            10000
-#define MAXHEIGHT           10000
-#define BASEWIDTH           320
-#define BASEHEIGHT          200
+#define VID_MAX_WIDTH		1280
+#define VID_MAX_HEIGHT		1024
+#define VID_MIN_WIDTH		320
+#define VID_MIN_HEIGHT      200
 #define SDL_DEFAULT_FLAGS   SDL_OPENGL
+
 
 // NOVA: Nova-Mesa is 32-bit colour only. This is the single source of truth
 // for colour depth in this file -- nothing negotiates any more.
-#define VID_BPP             32
+#define VID_COLOR_DEPTH			32
+
+// NOVA: our own video settings file, read with plain stdio at the very top of
+// VID_Init. The engine's config.cfg is not executed until the end of Host_Init,
+// which is far too late to pick a video mode -- hence the vid_* cvars below are
+// no longer archived, and this file is the single source of truth.
+#define VID_CONFIG_FILE			"video_config.cfg"
+#define VID_DEFAULT_WIDTH		320
+#define VID_DEFAULT_HEIGHT		240
 
 // NOVA: requested depth buffer size. 16 keeps the buffer small and the
 // z-compare inner loop cheap; raise to 24 only if you see z-fighting.
-// PERF: worth benchmarking 16 vs 24 once the port is up.
-#define VID_DEPTH_BITS      16
+#define VID_DEPTH_BUFFER_SIZE	16
 
 typedef struct {
 	modestate_t	type;
@@ -104,9 +109,6 @@ const char *gl_renderer;
 const char *gl_version;
 const char *gl_extensions;
 
-qboolean		DDActive;
-qboolean		scr_skipupdate;
-
 static vmode_t	modelist[MAX_MODE_LIST];
 static int		nummodes;
 static vmode_t	badmode;
@@ -123,8 +125,8 @@ int			vid_default = MODE_WINDOWED;
 unsigned char	vid_curpal[256*3];
 static qboolean fullsbardraw = false;
 
+viddef_t vid;
 glvert_t glv;
-//viddef_t	vid;				// global video state
 
 modestate_t	mode_state = MODE_WINDOWED;
 
@@ -132,25 +134,19 @@ void VID_Menu_Init (void); //johnfitz
 void VID_Menu_f (void); //johnfitz
 void VID_MenuDraw (void);
 void VID_MenuKey (int key);
-
 char *VID_GetModeDescription (int mode);
+void VID_SyncCvars (void);
+static void VID_SaveConfig (void);						// NOVA
+static qboolean VID_LoadConfig (int *width, int *height, qboolean *fullscreen);	// NOVA
 void ClearAllStates (void);
-void VID_UpdateWindowStatus (void);
-void GL_Init (void);
 void TexMgr_RecalcWarpImageSize (void);
+void TexMgr_LoadPalette (void);
 
 PFNGLMULTITEXCOORD2FARBPROC GL_MTexCoord2fFunc = NULL; //johnfitz
 PFNGLACTIVETEXTUREARBPROC GL_SelectTextureFunc = NULL; //johnfitz
 
-qboolean isPermedia = false;
 qboolean gl_mtexable = false;
 qboolean gl_texture_env_combine = false; //johnfitz
-qboolean gl_swap_control = false; //johnfitz -- NOVA: always false, kept for the menu/externs
-qboolean gl_anisotropy_able = false; //johnfitz -- NOVA: always false
-float gl_max_anisotropy = 1.0f; //johnfitz -- NOVA: must be 1.0, not 0, gl_texturemode divides by it
-
-int	gl_stencilbits; //johnfitz
-
 qboolean vid_locked = false; //johnfitz
 qboolean vid_changed = false;
 
@@ -159,45 +155,16 @@ void GL_SetupState (void); //johnfitz
 //====================================
 
 //johnfitz -- new cvars
-cvar_t		vid_fullscreen = {"vid_fullscreen", "1", true};
-cvar_t		vid_width = {"vid_width", "640", true};
-cvar_t		vid_height = {"vid_height", "480", true};
-cvar_t		vid_bpp = {"vid_bpp", "32", true};		// NOVA: fixed at 32, read-only in practice
-cvar_t		vid_refreshrate = {"vid_refreshrate", "60", true};
-cvar_t		vid_vsync = {"vid_vsync", "0", true};	// NOVA: registered but inert
+// NOVA: archive flag is now false on all of these -- they live in
+// video_config.cfg instead, because config.cfg is executed too late to be
+// useful for mode selection. Leaving them archived gives you two competing
+// sources of truth and the one that loses is the one you edited.
+cvar_t vid_fullscreen = {"vid_fullscreen", "1", false};
+cvar_t vid_width = {"vid_width", "320", false};
+cvar_t vid_height = {"vid_height", "240", false};
+cvar_t vid_bpp = {"vid_bpp", "32", false};		// NOVA: fixed at 32, read-only in practice
+cvar_t vid_gamma = {"gamma", "1", true}; //johnfitz -- moved here from view.c
 
-cvar_t		_windowed_mouse = {"_windowed_mouse","1", true};
-cvar_t		vid_gamma = {"gamma", "1", true}; //johnfitz -- moved here from view.c
-
-//==========================================================================
-//
-//  GAMMA -- NOVA
-//
-//  RTG has no per-window gamma ramp, so the SDL_SetGammaRamp path is gone.
-//  vid_gammaworks is retained as a definition (always 0) so that any
-//  stray extern in the rest of the tree still links.
-//
-//  TODO: implement gamma in TexMgr instead -- build a 256-entry table from
-//  vid_gamma.value, apply it during texture upload, and call
-//  TexMgr_ReloadImages() from VID_Gamma_f. Until then the gamma cvar and
-//  the options-menu slider do nothing.
-//
-//==========================================================================
-
-int vid_gammaworks = 0;
-
-void VID_Gamma_SetGamma (void)
-{
-}
-
-void VID_Gamma_Restore (void)
-{
-}
-
-void VID_Gamma_Shutdown (void)
-{
-	VID_Gamma_Restore ();
-}
 
 /*
 ================
@@ -213,8 +180,8 @@ void VID_Gamma_f (void)
 
 	oldgamma = vid_gamma.value;
 
-	// NOVA: nothing to apply yet -- see the TODO above.
-	VID_Gamma_SetGamma ();
+	TexMgr_LoadPalette ();		/* rebuilds from disk, so no compounding */
+	TexMgr_ReloadImages ();
 }
 
 /*
@@ -224,7 +191,6 @@ VID_Gamma_Init -- call on init
 */
 void VID_Gamma_Init (void)
 {
-	vid_gammaworks = 0;
 	Cvar_RegisterVariableEx (&vid_gamma, VID_Gamma_f);
 }
 
@@ -245,7 +211,7 @@ stops Mesa picking oversized defaults (in particular a 32-bit depth buffer).
 static void VID_SetGLAttributes (void)
 {
 	SDL_GL_SetAttribute (SDL_GL_DOUBLEBUFFER, 1);
-	SDL_GL_SetAttribute (SDL_GL_DEPTH_SIZE, VID_DEPTH_BITS);
+	SDL_GL_SetAttribute (SDL_GL_DEPTH_SIZE, VID_DEPTH_BUFFER_SIZE);
 	SDL_GL_SetAttribute (SDL_GL_RED_SIZE, 8);
 	SDL_GL_SetAttribute (SDL_GL_GREEN_SIZE, 8);
 	SDL_GL_SetAttribute (SDL_GL_BLUE_SIZE, 8);
@@ -297,7 +263,7 @@ int VID_SetMode (int modenum)
 	// NOVA: always VID_BPP -- modelist[].bpp is 32 everywhere, but be explicit
 	draw_context = SDL_SetVideoMode (modelist[modenum].width,
 									 modelist[modenum].height,
-									 VID_BPP,
+									 VID_COLOR_DEPTH,
 									 flags);
 
 	// NOVA: the original set this to true unconditionally, so a failed mode
@@ -308,15 +274,14 @@ int VID_SetMode (int modenum)
 	if (!mode_ok)
 	{
 		scr_disabled_for_loading = temp;
-		CDAudio_Resume ();
 		Sys_Error ("Couldn't set video mode %dx%dx%d (%s)",
 				   modelist[modenum].width,
 				   modelist[modenum].height,
-				   VID_BPP,
+				   VID_COLOR_DEPTH,
 				   SDL_GetError ());
 	}
 
-	sprintf (caption, "FitzQuake (Amiga) Version %1.2f", FITZQUAKE_VERSION);
+	sprintf (caption, "FitzQuake Version %1.2f", FITZQUAKE_VERSION);
 	SDL_WM_SetCaption (caption, caption);
 
 	vid.width = modelist[modenum].width;
@@ -326,7 +291,11 @@ int VID_SetMode (int modenum)
 	vid.numpages = 2;
 	vid.type = modelist[modenum].type;
 
-	VID_UpdateWindowStatus ();
+	if (mode_state == MODE_FULLSCREEN_DEFAULT) {
+		IN_GrabMouse(true);
+	} else {
+		IN_GrabMouse(false);
+    }
 
 	CDAudio_Resume ();
 	scr_disabled_for_loading = temp;
@@ -372,8 +341,8 @@ void VID_Restart (void)
 		return;
 
 	// NOVA: colour depth is not user selectable, keep the cvar honest
-	if ((int)vid_bpp.value != VID_BPP)
-		Cvar_Set ("vid_bpp", va("%i", VID_BPP));
+	if ((int)vid_bpp.value != VID_COLOR_DEPTH)
+		Cvar_Set ("vid_bpp", va("%i", VID_COLOR_DEPTH));
 
 	if (vid_fullscreen.value)
 	{
@@ -399,13 +368,13 @@ void VID_Restart (void)
 	}
 	else //not fullscreen
 	{
-		if (vid_width.value < 320)
+		if (vid_width.value < VID_MIN_WIDTH)
 		{
 			Con_Printf ("Window width can't be less than 320\n");
 			return;
 		}
 
-		if (vid_height.value < 200)
+		if (vid_height.value < VID_MIN_HEIGHT)
 		{
 			Con_Printf ("Window height can't be less than 200\n");
 			return;
@@ -413,7 +382,7 @@ void VID_Restart (void)
 
 		modelist[0].width = (int)vid_width.value;
 		modelist[0].height = (int)vid_height.value;
-		modelist[0].bpp = VID_BPP;
+		modelist[0].bpp = VID_COLOR_DEPTH;
 		sprintf (modelist[0].modedesc, "%dx%dx%d",
 				 modelist[0].width,
 				 modelist[0].height,
@@ -441,8 +410,11 @@ void VID_Restart (void)
 //
 	Cvar_Set ("vid_width", va("%i", modelist[vid_default].width));
 	Cvar_Set ("vid_height", va("%i", modelist[vid_default].height));
-	Cvar_Set ("vid_bpp", va("%i", VID_BPP));
+	Cvar_Set ("vid_bpp", va("%i", VID_COLOR_DEPTH));
 	Cvar_Set ("vid_fullscreen", (windowed) ? "0" : "1");
+
+	// NOVA: remember the mode we ended up in, not the one that was asked for
+	VID_SaveConfig ();
 }
 
 /*
@@ -485,18 +457,10 @@ void VID_Unlock (void)
 	//sync up cvars in case they were changed during the lock
 	Cvar_Set ("vid_width", va("%i", modelist[vid_default].width));
 	Cvar_Set ("vid_height", va("%i", modelist[vid_default].height));
-	Cvar_Set ("vid_bpp", va("%i", VID_BPP));
+	Cvar_Set ("vid_bpp", va("%i", VID_COLOR_DEPTH));
 	Cvar_Set ("vid_fullscreen", (windowed) ? "0" : "1");
 }
 
-/*
-================
-VID_UpdateWindowStatus
-================
-*/
-void VID_UpdateWindowStatus (void)
-{
-}
 
 //==============================================================================
 //
@@ -560,19 +524,6 @@ void GL_Info_f (void)
 
 /*
 ===============
-CheckArrayExtensions
-
-NOVA: kept as an empty stub so any remaining callers still link. Mesa 4.1
-exposes vertex arrays as core GL 1.1, so there is nothing to detect and the
-GL_EXT_vertex_array entry points do not exist.
-===============
-*/
-void CheckArrayExtensions (void)
-{
-}
-
-/*
-===============
 GL_CheckExtensions -- johnfitz
 
 NOVA: rewritten. Nova-Mesa is statically linked so there is no runtime
@@ -587,7 +538,7 @@ void GL_CheckExtensions (void)
 	//
 	if (COM_CheckParm("-nomtex"))
 	{
-		Con_Printf ("WARNING: Multitexture disabled at command line\n");
+		Con_Printf ("WARNING: Multi-texture disabled at command line\n");
 	}
 	else if (strstr(gl_extensions, "GL_ARB_multitexture"))
 	{
@@ -597,7 +548,7 @@ void GL_CheckExtensions (void)
 
 	    if (units < 2)
 	    {
-	        Con_Printf ("WARNING: multitexture present but only %i unit(s)\n", (int)units);
+	        Con_Printf ("WARNING: multi-texture present but only %i unit(s)\n", (int)units);
 	    }
 	    else
 	    {
@@ -611,15 +562,12 @@ void GL_CheckExtensions (void)
 	}
 	else
 	{
-		Con_Printf ("WARNING: multitexture not supported (extension not found)\n");
+		Con_Printf ("WARNING: multi-texture not supported (extension not found)\n");
+		gl_mtexable = false;
 	}
 
 	//
 	// texture_env_combine
-	//
-	// PERF: this drives FitzQuake's overbright lightmaps via GL_RGB_SCALE,
-	// which puts swrast on the slow generic texenv path. Try -nocombine and
-	// compare before deciding to keep it.
 	//
 	if (COM_CheckParm("-nocombine"))
 	{
@@ -638,15 +586,8 @@ void GL_CheckExtensions (void)
 	else
 	{
 		Con_Printf ("WARNING: texture_env_combine not supported\n");
+		gl_texture_env_combine = false;
 	}
-
-	//
-	// NOVA: swap control removed -- WGL/GLX only, no RTG equivalent.
-	// NOVA: anisotropic filtering removed -- not implemented by Mesa 4.1 swrast.
-	//
-	gl_swap_control = false;
-	gl_anisotropy_able = false;
-	gl_max_anisotropy = 1.0f;
 }
 
 /*
@@ -664,17 +605,13 @@ void GL_SetupState (void)
 	glFrontFace (GL_CW);
 	glEnable (GL_TEXTURE_2D);
 
-	// PERF: FitzQuake only needs alpha test for sky and fence textures.
-	// Enabling it globally costs a per-fragment test on every surface.
 	glEnable (GL_ALPHA_TEST);
 	glAlphaFunc (GL_GREATER, 0.666);
 
 	glPolygonMode (GL_FRONT_AND_BACK, GL_FILL);
 	glShadeModel (GL_FLAT);
 
-	// PERF: GL_FASTEST here may buy back real time on swrast. Left at
-	// NICEST for the correctness pass so the output matches the reference.
-	glHint (GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
+	glHint (GL_PERSPECTIVE_CORRECTION_HINT, GL_FASTEST);
 
 	glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glTexEnvf (GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
@@ -691,7 +628,7 @@ void GL_SetupState (void)
 GL_Init
 ===============
 */
-void GL_Init (void)
+static void GL_Init (void)
 {
 	// NOVA: NULL-safe -- a bad context would otherwise blow up in strstr()
 	gl_vendor     = (const char *) glGetString (GL_VENDOR);
@@ -710,11 +647,6 @@ void GL_Init (void)
 	GL_CheckExtensions ();
 
 	Cmd_AddCommand ("gl_info", GL_Info_f);
-
-	Cvar_RegisterVariableEx (&vid_vsync, VID_Changed_f);
-
-	// NOVA: PowerVR / Permedia driver sniffing removed, neither exists here.
-	isPermedia = false;
 
 	GL_SetupState ();
 }
@@ -738,15 +670,10 @@ GL_EndRendering
 */
 void GL_EndRendering (void)
 {
-	if (!scr_skipupdate || block_drawing)
-		SDL_GL_SwapBuffers ();
+	SDL_GL_SwapBuffers ();
 
 	if (fullsbardraw)
 		Sbar_Changed ();
-}
-
-void VID_SetDefaultMode (void)
-{
 }
 
 void VID_Shutdown (void)
@@ -754,7 +681,6 @@ void VID_Shutdown (void)
 	if (vid_initialized)
 	{
 		vid_canalttab = false;
-		VID_Gamma_Shutdown ();
 
 		SDL_QuitSubSystem (SDL_INIT_VIDEO);
 		draw_context = NULL;
@@ -909,10 +835,98 @@ void VID_DescribeModes_f (void)
 
 /*
 =================
+VID_SaveConfig -- NOVA
+
+Writes the mode we are actually in, not the mode that was asked for.
+=================
+*/
+static void VID_SaveConfig (void)
+{
+	FILE	*f;
+	char	path[MAX_OSPATH];
+
+	sprintf (path, "%s/%s", com_gamedir, VID_CONFIG_FILE);
+
+	f = fopen (path, "w");
+	if (!f)
+	{
+		Con_SafePrintf ("Could not write %s, video settings will not be saved.\n", path);
+		return;
+	}
+
+	fprintf (f, "vid_width %d\n", modelist[vid_default].width);
+	fprintf (f, "vid_height %d\n", modelist[vid_default].height);
+	fprintf (f, "vid_depth %d\n", VID_COLOR_DEPTH);
+	fprintf (f, "vid_fullscreen %d\n", windowed ? 0 : 1);
+
+	fclose (f);
+}
+
+/*
+=================
+VID_LoadConfig -- NOVA
+
+Read with stdio rather than the Cbuf, because this has to happen before the
+command buffer is any use. Returns false if there is nothing usable, in which
+case the caller keeps its defaults. vid_depth is written for readability but
+ignored on read -- Nova-Mesa is 32bpp only.
+=================
+*/
+static qboolean VID_LoadConfig (int *width, int *height, qboolean *fullscreen)
+{
+	FILE		*f;
+	char		path[MAX_OSPATH];
+	char		line[256];
+	char		key[64];
+	int			value;
+	qboolean	gotwidth = false, gotheight = false;
+
+	sprintf (path, "%s/%s", com_gamedir, VID_CONFIG_FILE);
+
+	f = fopen (path, "r");
+	if (!f)
+		return false;
+
+	while (fgets (line, sizeof(line), f))
+	{
+		if (sscanf (line, "%63s %d", key, &value) != 2)
+			continue;
+
+		if (!strcmp (key, "vid_width"))
+		{
+			*width = value;
+			gotwidth = true;
+		}
+		else if (!strcmp (key, "vid_height"))
+		{
+			*height = value;
+			gotheight = true;
+		}
+		else if (!strcmp (key, "vid_fullscreen"))
+		{
+			*fullscreen = value ? true : false;
+		}
+	}
+
+	fclose (f);
+
+	if (!gotwidth || !gotheight || *width < 320 || *height < 200)
+	{
+		Con_SafePrintf ("Invalid video settings in %s, using defaults\n", VID_CONFIG_FILE);
+		return false;
+	}
+
+	return true;
+}
+
+/*
+=================
 VID_InitDIB -- windowed mode
 
 NOVA: no longer inherits the desktop depth from SDL_GetVideoInfo(), since
 Nova-Mesa only renders 32-bit regardless of what the Workbench screen is.
+The width/height set here are placeholders -- VID_Init overwrites them from
+video_config.cfg once the mode list is built.
 =================
 */
 void VID_InitDIB (void)
@@ -924,18 +938,18 @@ void VID_InitDIB (void)
 	else
 		modelist[0].width = 640;
 
-	if (modelist[0].width < 320)
-		modelist[0].width = 320;
+	if (modelist[0].width < VID_MIN_WIDTH)
+		modelist[0].width = VID_MIN_WIDTH;
 
 	if (COM_CheckParm("-height"))
 		modelist[0].height = Q_atoi(com_argv[COM_CheckParm("-height")+1]);
 	else
 		modelist[0].height = modelist[0].width * 240/320;
 
-	if (modelist[0].height < 200)
-		modelist[0].height = 200;
+	if (modelist[0].height < VID_MIN_HEIGHT)
+		modelist[0].height = VID_MIN_HEIGHT;
 
-	modelist[0].bpp = VID_BPP;
+	modelist[0].bpp = VID_COLOR_DEPTH;
 
 	sprintf (modelist[0].modedesc, "%dx%dx%d",
 			 modelist[0].width,
@@ -962,8 +976,14 @@ static void VID_AddMode (int w, int h)
 	if (nummodes >= MAX_MODE_LIST)
 		return;
 
-	if (w > MAXWIDTH || h > MAXHEIGHT || w < 320 || h < 200)
+	if (w > VID_MAX_WIDTH || h > VID_MAX_HEIGHT) {
 		return;
+	}
+
+
+	if (w < VID_MIN_WIDTH || h < VID_MIN_HEIGHT) {
+		return;
+	}
 
 	// reject duplicates
 	for (k = 1; k < nummodes; k++)
@@ -979,9 +999,9 @@ static void VID_AddMode (int w, int h)
 	modelist[nummodes].halfscreen = 0;
 	modelist[nummodes].dib = 1;
 	modelist[nummodes].fullscreen = 1;
-	modelist[nummodes].bpp = VID_BPP;
+	modelist[nummodes].bpp = VID_COLOR_DEPTH;
 
-	sprintf (modelist[nummodes].modedesc, "%dx%dx%d", w, h, VID_BPP);
+	sprintf (modelist[nummodes].modedesc, "%dx%dx%d", w, h, VID_COLOR_DEPTH);
 
 	nummodes++;
 }
@@ -1007,7 +1027,7 @@ void VID_InitFullDIB (void)
 
 	memset (&format, 0, sizeof(format));
 	format.palette = NULL;
-	format.BitsPerPixel = VID_BPP;
+	format.BitsPerPixel = VID_COLOR_DEPTH;
 
 	flags = SDL_DEFAULT_FLAGS | SDL_FULLSCREEN;
 	modes = SDL_ListModes (&format, flags);
@@ -1039,13 +1059,13 @@ void VID_Init (void)
 {
 	const SDL_VideoInfo	*info;
 	int					i, width, height;
+	qboolean			fullscreen;
 	char				gldir[MAX_OSPATH];
 
 	Cvar_RegisterVariableEx (&vid_fullscreen, VID_Changed_f);
 	Cvar_RegisterVariableEx (&vid_width, VID_Changed_f);
 	Cvar_RegisterVariableEx (&vid_height, VID_Changed_f);
 	Cvar_RegisterVariableEx (&vid_bpp, VID_Changed_f);
-	Cvar_RegisterVariable (&_windowed_mouse);
 
 	Cmd_AddCommand ("vid_unlock", VID_Unlock);
 	Cmd_AddCommand ("vid_restart", VID_Restart);
@@ -1057,26 +1077,70 @@ void VID_Init (void)
 		Sys_Error ("Could not initialize SDL Video: %s", SDL_GetError());
 
 	// NOVA: colour depth is not negotiable
-	Cvar_Set ("vid_bpp", va("%i", VID_BPP));
+	Cvar_Set ("vid_bpp", va("%i", VID_COLOR_DEPTH));
 
 	VID_InitDIB ();
 	VID_InitFullDIB ();
 
+	//
+	// NOVA: decide the mode from video_config.cfg, then let the command line
+	// override it. This is the whole point of the bespoke file -- config.cfg
+	// is not executed until the end of Host_Init, long after we need this.
+	//
+	width = VID_DEFAULT_WIDTH;
+	height = VID_DEFAULT_HEIGHT;
+	fullscreen = true;
+
+	VID_LoadConfig (&width, &height, &fullscreen);
+
+	if (COM_CheckParm("-width"))
+		width = Q_atoi (com_argv[COM_CheckParm("-width")+1]);
+
+	if (COM_CheckParm("-height"))
+		height = Q_atoi (com_argv[COM_CheckParm("-height")+1]);
+
 	if (COM_CheckParm("-window"))
-	{
-		windowed = true;
-		vid_default = MODE_WINDOWED;
+		fullscreen = false;
+
+	if (COM_CheckParm("-fullscreen"))
+		fullscreen = true;
+
+	if (width < VID_MIN_WIDTH) {
+		width = VID_MIN_WIDTH;
 	}
-	else if (nummodes == 1)
+
+	if (width > VID_MAX_WIDTH) {
+		width = VID_MAX_WIDTH;
+	}
+
+	if (height < VID_MIN_HEIGHT) {
+		height = VID_MIN_HEIGHT;
+	}
+
+	if (height > VID_MAX_HEIGHT) {
+		height = VID_MAX_HEIGHT;
+	}
+
+	if (!fullscreen || nummodes == 1)
 	{
-		// NOVA: fall back to windowed rather than dying outright
-		Con_SafePrintf ("WARNING: no fullscreen modes available, using windowed\n");
+		if (fullscreen)
+		{
+			// NOVA: fall back to windowed rather than dying outright
+			Con_SafePrintf ("WARNING: no fullscreen modes available, using windowed\n");
+			fullscreen = false;
+		}
+
 		windowed = true;
 		vid_default = MODE_WINDOWED;
+
+		modelist[0].width = width;
+		modelist[0].height = height;
+		sprintf (modelist[0].modedesc, "%dx%dx%d", width, height, VID_COLOR_DEPTH);
 	}
 	else
 	{
 		windowed = false;
+		vid_default = 0;
 
 		if (COM_CheckParm("-mode"))
 		{
@@ -1099,38 +1163,42 @@ void VID_Init (void)
 			leavecurrentmode = 1;
 		}
 
+		// if they want to force it, add the requested mode to the list
+		if (!vid_default && COM_CheckParm("-force"))
+			VID_AddMode (width, height);
+
+		// NOVA: no findbpp walk -- everything in the list is 32bpp, so we only
+		// ever match on dimensions. Exact match first.
 		if (!vid_default)
 		{
-			// NOVA: no findbpp walk -- everything in the list is 32bpp, so we
-			// only ever match on dimensions.
-			width = COM_CheckParm("-width") ?
-					Q_atoi(com_argv[COM_CheckParm("-width")+1]) : 640;
-
-			height = COM_CheckParm("-height") ?
-					 Q_atoi(com_argv[COM_CheckParm("-height")+1]) : 0;
-
-			// if they want to force it, add the specified mode to the list
-			if (COM_CheckParm("-force") && height)
-				VID_AddMode (width, height);
-
 			for (i = 1; i < nummodes; i++)
 			{
-				if (modelist[i].width != width)
-					continue;
-
-				if (height && modelist[i].height != height)
-					continue;
-
-				vid_default = i;
-				break;
+				if (modelist[i].width == width && modelist[i].height == height)
+				{
+					vid_default = i;
+					break;
+				}
 			}
+		}
 
-			if (!vid_default)
+		// then settle for anything at the requested width
+		if (!vid_default)
+		{
+			for (i = 1; i < nummodes; i++)
 			{
-				Con_SafePrintf ("WARNING: %ix%i not available, using %s\n",
-								width, height, modelist[1].modedesc);
-				vid_default = 1;
+				if (modelist[i].width == width)
+				{
+					vid_default = i;
+					break;
+				}
 			}
+		}
+
+		if (!vid_default)
+		{
+			Con_SafePrintf ("WARNING: %ix%i not available, using %s\n",
+							width, height, modelist[1].modedesc);
+			vid_default = 1;
 		}
 	}
 
@@ -1162,12 +1230,19 @@ void VID_Init (void)
 	VID_Gamma_Init ();
 	VID_Menu_Init ();
 
-	//johnfitz -- command line vid settings should override config file settings.
-	if (COM_CheckParm("-width") || COM_CheckParm("-height") ||
-		COM_CheckParm("-mode") || COM_CheckParm("-window"))
-	{
-		vid_locked = true;
-	}
+	// NOVA: point the cvars at the mode we actually got, so the video menu
+	// opens on the right entry. Clear vid_changed afterwards -- VID_SyncCvars
+	// goes through Cvar_Set, which fires VID_Changed_f.
+	VID_SyncCvars ();
+	vid_changed = false;
+
+	// NOVA: persist the working configuration, which also creates the file on
+	// a first run so there is something to hand-edit.
+	VID_SaveConfig ();
+
+	// NOVA: the old vid_locked block is gone. It existed to stop config.cfg
+	// overriding command line vid settings, and config.cfg no longer carries
+	// any -- locking now would only stop the menu working.
 }
 
 /*
@@ -1179,9 +1254,8 @@ void VID_SyncCvars (void)
 {
 	Cvar_Set ("vid_width", va("%i", modelist[vid_default].width));
 	Cvar_Set ("vid_height", va("%i", modelist[vid_default].height));
-	Cvar_Set ("vid_bpp", va("%i", VID_BPP));
+	Cvar_Set ("vid_bpp", va("%i", VID_COLOR_DEPTH));
 	Cvar_Set ("vid_fullscreen", (windowed) ? "0" : "1");
-	// NOVA: no vsync query, gl_swap_control is always false
 }
 
 //==========================================================================
@@ -1292,7 +1366,10 @@ void VID_MenuKey (int key)
 	switch (key)
 	{
 	case K_ESCAPE:
+		// NOVA: discard any unapplied selection and save what we are actually in
 		VID_SyncCvars ();
+		vid_changed = false;
+		VID_SaveConfig ();
 		S_LocalSound ("misc/menu1.wav");
 		M_Menu_Options_f ();
 		break;
@@ -1316,7 +1393,7 @@ void VID_MenuKey (int key)
 		switch (video_options_cursor)
 		{
 		case 0:
-			VID_Menu_ChooseNextMode (-1);
+			VID_Menu_ChooseNextMode (1);
 			break;
 		case 2:
 			Cbuf_AddText ("toggle vid_fullscreen\n");
@@ -1331,7 +1408,7 @@ void VID_MenuKey (int key)
 		switch (video_options_cursor)
 		{
 		case 0:
-			VID_Menu_ChooseNextMode (1);
+			VID_Menu_ChooseNextMode (-1);
 			break;
 		case 2:
 			Cbuf_AddText ("toggle vid_fullscreen\n");
@@ -1346,7 +1423,7 @@ void VID_MenuKey (int key)
 		switch (video_options_cursor)
 		{
 		case 0:
-			VID_Menu_ChooseNextMode (1);
+			VID_Menu_ChooseNextMode (-1);
 			break;
 		case 2:
 			Cbuf_AddText ("toggle vid_fullscreen\n");
@@ -1356,6 +1433,7 @@ void VID_MenuKey (int key)
 			break;
 		case 4:
 			Cbuf_AddText ("vid_restart\n");
+			IN_GrabMouse(true);
 			key_dest = key_game;
 			menu_state = m_none;
 			break;
@@ -1395,7 +1473,7 @@ void VID_MenuDraw (void)
 	i++;
 
 	M_Print (16, video_cursor_table[i], "           Color depth");
-	M_Print (216, video_cursor_table[i], va("%i", VID_BPP));
+	M_Print (216, video_cursor_table[i], va("%i", VID_COLOR_DEPTH));
 	i++;
 
 	M_Print (16, video_cursor_table[i], "            Fullscreen");

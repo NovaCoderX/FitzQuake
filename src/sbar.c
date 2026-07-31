@@ -808,11 +808,7 @@ void Sbar_DrawFace (void)
 		bottom = (s->colors & 15)<<4;
 		top = Sbar_ColorForMap (top);
 		bottom = Sbar_ColorForMap (bottom);
-
-		if (cl.gametype == GAME_DEATHMATCH)
-			xofs = 113;
-		else
-			xofs = ((vid.width - 320)>>1) + 113;
+		xofs = 113;
 
 		Sbar_DrawPic (112, 0, rsb_teambord);
 		Draw_Fill (xofs, /*vid.height-*/24+3, 22, 9, top); //johnfitz -- sbar coords are now relative

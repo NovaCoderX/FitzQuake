@@ -118,13 +118,46 @@ void R_MarkSurfaces (void)
 	//need to do it this way if we want to work with tyrann's skip removal tool
 	//becuase his tool doesn't actually remove the surfaces from the bsp surfaces lump
 	//nor does it remove references to them in each leaf's marksurfaces list
-	for (i=0, node = cl.worldmodel->nodes ; i<cl.worldmodel->numnodes ; i++, node++)
-		for (j=0, surf=&cl.worldmodel->surfaces[node->firstsurface] ; j<node->numsurfaces ; j++, surf++)
-			if (surf->visframe == r_visframecount)
+	//NOVA -- two-pass bucketed build, so surfaces sharing a lightmap end up
+	//        adjacent within each texture chain.
+	//
+	//        R_DrawTextureChains_Multitexture binds the lightmap once per SURFACE,
+	//        and in Mesa every glBindTexture sets _NEW_TEXTURE, which forces a full
+	//        derived-state revalidation (including re-choosing the sampler and the
+	//        triangle function) before the next primitive. Grouping by lightmap lets
+	//        GL_Bind's currenttexture check swallow the repeats, turning one bind per
+	//        polygon into one bind per lightmap run.
+	//
+	//        Pass 1 reuses texturechain as the bucket link, so no extra field is
+	//        needed in msurface_t. This whole block only runs when the chains are
+	//        actually regenerated, not every frame.
+	{
+		msurface_t	*lmchain[MAX_LIGHTMAPS];
+		msurface_t	*next;
+		int			lm;
+
+		memset (lmchain, 0, sizeof(lmchain));
+
+		for (i=0, node = cl.worldmodel->nodes ; i<cl.worldmodel->numnodes ; i++, node++)
+			for (j=0, surf=&cl.worldmodel->surfaces[node->firstsurface] ; j<node->numsurfaces ; j++, surf++)
+				if (surf->visframe == r_visframecount)
+				{
+					lm = surf->lightmaptexturenum;
+					if ((unsigned)lm >= MAX_LIGHTMAPS)
+						lm = 0;	//sky and turb surfaces never get a lightmap
+
+					surf->texturechain = lmchain[lm];
+					lmchain[lm] = surf;
+				}
+
+		for (lm = 0 ; lm < MAX_LIGHTMAPS ; lm++)
+			for (surf = lmchain[lm] ; surf ; surf = next)
 			{
+				next = surf->texturechain;
 				surf->texturechain = surf->texinfo->texture->texturechain;
 				surf->texinfo->texture->texturechain = surf;
 			}
+	}
 #else
 	//the old way
 	surf = &cl.worldmodel->surfaces[cl.worldmodel->firstmodelsurface];

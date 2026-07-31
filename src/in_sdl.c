@@ -48,13 +48,13 @@ void IN_Init (void)
     mouse_x = mouse_y = 0;
     old_mouse_x = old_mouse_y = 0;
     
-	Cvar_RegisterVariable (&lookspring);
+	/*Cvar_RegisterVariable (&lookspring);
 	Cvar_RegisterVariable (&lookstrafe);
 	Cvar_RegisterVariable (&sensitivity);
 	Cvar_RegisterVariable (&m_pitch);
 	Cvar_RegisterVariable (&m_yaw);
 	Cvar_RegisterVariable (&m_forward);
-	Cvar_RegisterVariable (&m_side);
+	Cvar_RegisterVariable (&m_side);*/
 	Cvar_RegisterVariable (&m_filter);
 
     // Mouse look by default.

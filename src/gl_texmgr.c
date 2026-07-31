@@ -43,6 +43,35 @@ int			gl_alpha_format = 4;
 gltexture_t	*active_gltextures, *free_gltextures;
 int numgltextures;
 
+static byte texgamma[256];
+
+/*
+================
+TexMgr_BuildGammaTable
+
+AmigaOS3 has no gamma ramp, so gamma is baked into the palette instead.
+================
+*/
+static void TexMgr_BuildGammaTable (void)
+{
+	int	i, v;
+	float	g = vid_gamma.value;
+
+	if (g <= 0)
+		g = 1.0f;
+
+	for (i = 0; i < 256; i++)
+	{
+		if (g == 1.0f)
+			texgamma[i] = i;
+		else
+		{
+			v = (int) (255.0 * pow ((i + 0.5) / 255.5, g) + 0.5);
+			texgamma[i] = CLAMP(0, v, 255);
+		}
+	}
+}
+
 /*
 ================================================================================
 
@@ -419,6 +448,11 @@ void TexMgr_LoadPalette (void)
 	pal = Hunk_Alloc (768);
 	fread (pal, 1, 768, f);
 	fclose(f);
+
+	TexMgr_BuildGammaTable ();
+	for (i = 0; i < 768; i++) {
+		pal[i] = texgamma[pal[i]];
+	}
 
 	//standard palette, 255 is transparent
 	dst = (byte *)d_8to24table;

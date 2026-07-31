@@ -323,6 +323,9 @@ typedef struct {
 	maliasframedesc_t	frames[1];	// variable sized
 } aliashdr_t;
 
+struct entity_s;
+void R_RotateForAliasEntity (struct entity_s *e, aliashdr_t *paliashdr);	//NOVA
+
 #define	MAXALIASVERTS	2000 //johnfitz -- was 1024
 #define	MAXALIASFRAMES	256
 #define	MAXALIASTRIS	2048

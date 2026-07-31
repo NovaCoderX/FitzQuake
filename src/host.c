@@ -491,7 +491,7 @@ not reinitialize anything.
 void Host_ClearMemory (void)
 {
 	Con_DPrintf ("Clearing memory\n");
-	D_FlushCaches ();
+
 	Mod_ClearAll ();
 	if (host_hunklevel)
 		Hunk_FreeToLowMark (host_hunklevel);
@@ -633,9 +633,11 @@ void Host_Frame (float time)
 	}
 
 // update video - NOVA_CODER - Frame skip.
-	if (host_frametime != 0.1) {
+	//if (host_frametime != 0.1) {
         SCR_UpdateScreen ();
-    }
+    //}
+
+    CL_RunParticles (); //johnfitz -- separated from rendering
 		
 // update audio
 	if (cls.signon == SIGNONS)
@@ -821,7 +823,7 @@ void Host_Shutdown(void)
 
 	Host_WriteConfiguration ();
 
-	if (cls.state != ca_dedicated)
+	if (host_initialized && cls.state != ca_dedicated)
 	{
 		NET_Shutdown ();
 		CDAudio_Shutdown ();

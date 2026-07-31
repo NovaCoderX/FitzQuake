@@ -45,7 +45,13 @@ float	r_avertexnormal_dots[SHADEDOT_QUANT][256] =
 #include "anorm_dots.h"
 ;
 
-float	*shadedots = r_avertexnormal_dots[0];
+float *shadedots = r_avertexnormal_dots[0];
+
+//NOVA -- shadedots[] * lightcolor[] precomputed as bytes, once per model.
+//        Saves three float multiplies and a float->chan conversion on every
+//        vertex emission, and models emit each vertex several times across
+//        their strips and fans.
+static byte	r_aliasvertcolor[NUMVERTEXNORMALS][3];
 
 /*
 =============
@@ -140,12 +146,20 @@ void GL_DrawAliasShadow (aliashdr_t *paliashdr, int posenum)
 GL_DrawAliasFrame
 =============
 */
+#define ALIASLIGHT_LIT		0
+#define ALIASLIGHT_WHITE	1
+#define ALIASLIGHT_FLAT		2
+
 void GL_DrawAliasFrame (aliashdr_t *paliashdr, int posenum)
 {
-	vec3_t 	vertcolor; //johnfitz -- replaces "float l" for lit support
 	trivertx_t	*verts;
 	int		*commands; //johnfitz -- renamed from "*order" to reduce confusion
 	int		count;
+	//NOVA -- hoisted out of the per-vertex loop
+	const qboolean	domtex = mtexenabled;
+	const int	lightmode = r_drawflat_cheatsafe ? ALIASLIGHT_FLAT :
+			    (r_fullbright_cheatsafe || r_lightmap_cheatsafe) ? ALIASLIGHT_WHITE :
+			    ALIASLIGHT_LIT;
 
 	verts = (trivertx_t *)((byte *)paliashdr + paliashdr->posedata);
 	verts += posenum * paliashdr->poseverts;
@@ -168,34 +182,33 @@ void GL_DrawAliasFrame (aliashdr_t *paliashdr, int posenum)
 
 		do
 		{
-			//johnfitz -- multitexture
-			if(mtexenabled)
+			//NOVA -- domtex and lightmode are constant for the whole model, so
+			//        they were hoisted out of this loop. The common lit case is
+			//        now tested first and costs one compare instead of three.
+			if (domtex)
 			{
 				GL_MTexCoord2fFunc (TEXTURE0, ((float *)commands)[0], ((float *)commands)[1]);
 				GL_MTexCoord2fFunc (TEXTURE1, ((float *)commands)[0], ((float *)commands)[1]);
 			}
 			else
 				glTexCoord2f (((float *)commands)[0], ((float *)commands)[1]);
-			//johnfitz
 
 			commands += 2;
 
 			//johnfitz -- r_drawflat, lit support
-			if (r_drawflat_cheatsafe)
+			if (lightmode == ALIASLIGHT_LIT)
 			{
-				srand(count * (unsigned int) commands);
-				glColor3f (rand()%256/255.0, rand()%256/255.0, rand()%256/255.0);
+				//NOVA -- table lookup, and bytes so glColor skips the float conversion
+				glColor3ubv (r_aliasvertcolor[verts->lightnormalindex]);
 			}
-			else if (r_fullbright_cheatsafe || r_lightmap_cheatsafe)
+			else if (lightmode == ALIASLIGHT_WHITE)
 			{
 				glColor3f(1,1,1);
 			}
 			else
 			{
-				vertcolor[0] = shadedots[verts->lightnormalindex] * lightcolor[0];
-				vertcolor[1] = shadedots[verts->lightnormalindex] * lightcolor[1];
-				vertcolor[2] = shadedots[verts->lightnormalindex] * lightcolor[2];
-				glColor3fv (vertcolor);
+				srand(count * (unsigned int) commands);
+				glColor3f (rand()%256/255.0, rand()%256/255.0, rand()%256/255.0);
 			}
 			//johnfitz
 
@@ -307,6 +320,27 @@ void R_SetupAliasLighting (entity_t	*e)
 
 	shadedots = r_avertexnormal_dots[((int)(e->angles[1] * (SHADEDOT_QUANT / 360.0))) & (SHADEDOT_QUANT - 1)];
 	VectorScale(lightcolor, 1.0f / 200.0f, lightcolor);
+
+	//NOVA -- precompute the per-normal vertex colour for this model
+	{
+		int		i, r, g, b;
+		float	cr = lightcolor[0] * 255.0f;
+		float	cg = lightcolor[1] * 255.0f;
+		float	cb = lightcolor[2] * 255.0f;
+
+		for (i = 0; i < NUMVERTEXNORMALS; i++)
+		{
+			float d = shadedots[i];
+
+			r = (int)(d * cr);
+			g = (int)(d * cg);
+			b = (int)(d * cb);
+
+			r_aliasvertcolor[i][0] = (byte) CLAMP(0, r, 255);
+			r_aliasvertcolor[i][1] = (byte) CLAMP(0, g, 255);
+			r_aliasvertcolor[i][2] = (byte) CLAMP(0, b, 255);
+		}
+	}
 }
 
 /*
@@ -334,9 +368,7 @@ void R_DrawAliasModel (entity_t *e)
 	rs_aliaspolys += paliashdr->numtris;
 
     glPushMatrix ();
-	R_RotateForEntity (e);
-	glTranslatef (paliashdr->scale_origin[0], paliashdr->scale_origin[1], paliashdr->scale_origin[2]);
-	glScalef (paliashdr->scale[0], paliashdr->scale[1], paliashdr->scale[2]);
+	R_RotateForAliasEntity (e, paliashdr); //NOVA -- one matrix instead of five
 
 	if (gl_smoothmodels.value && !r_drawflat_cheatsafe)
 		glShadeModel (GL_SMOOTH);
@@ -578,9 +610,7 @@ void R_DrawAliasModel_ShowTris (entity_t *e)
 	paliashdr = (aliashdr_t *)Mod_Extradata (currententity->model);
 
     glPushMatrix ();
-	R_RotateForEntity (e);
-	glTranslatef (paliashdr->scale_origin[0], paliashdr->scale_origin[1], paliashdr->scale_origin[2]);
-	glScalef (paliashdr->scale[0], paliashdr->scale[1], paliashdr->scale[2]);
+	R_RotateForAliasEntity (e, paliashdr); //NOVA -- one matrix instead of five
 
 	posenum = R_SetupAliasFrame (paliashdr, currententity->frame);
 

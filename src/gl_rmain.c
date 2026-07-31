@@ -160,13 +160,136 @@ qboolean R_CullBox (vec3_t emins, vec3_t emaxs)
 R_RotateForEntity
 ===============
 */
+/*
+=============
+NOVA -- sin/cos lookup tables
+
+The 68040/060 have no hardware FSIN/FCOS, so every libm call traps into
+software emulation. Entity angles arrive from the network quantised to
+360/256, so a 4096-entry table (0.088 degrees) is finer than the source data.
+=============
+*/
+#define R_ANGLE_TABLE_SIZE	4096
+#define R_ANGLE_TABLE_MASK	(R_ANGLE_TABLE_SIZE - 1)
+#define R_ANGLE_TABLE_SCALE	((float)R_ANGLE_TABLE_SIZE / 360.0f)
+
+static float r_sintable[R_ANGLE_TABLE_SIZE];
+static float r_costable[R_ANGLE_TABLE_SIZE];
+
+void R_BuildAngleTables (void)
+{
+	int		i;
+	double	a;
+
+	for (i = 0; i < R_ANGLE_TABLE_SIZE; i++)
+	{
+		a = (double)i * ((2.0 * M_PI) / (double)R_ANGLE_TABLE_SIZE);
+		r_sintable[i] = (float) sin (a);
+		r_costable[i] = (float) cos (a);
+	}
+}
+
+/* degrees in, sin and cos out. Negative angles wrap correctly because the
+ * mask is applied to a two's complement index. */
+void R_SinCos (float degrees, float *s, float *c)
+{
+	int idx = ((int)(degrees * R_ANGLE_TABLE_SCALE)) & R_ANGLE_TABLE_MASK;
+
+	*s = r_sintable[idx];
+	*c = r_costable[idx];
+}
+
+/*
+=============
+R_EntityMatrix -- NOVA
+
+Builds the column-major GL matrix equivalent to
+
+    glTranslatef (origin)
+    glRotatef (angles[1],  0, 0, 1)
+    glRotatef (-angles[0], 0, 1, 0)
+    glRotatef (angles[2],  1, 0, 0)
+    [ glTranslatef (scale_origin); glScalef (scale) ]   -- alias models only
+
+Mesa turns each of those calls into a sin/cos pair plus a full 4x4 build and
+multiply, so an alias entity was costing five matrix multiplies and three
+transcendental pairs per frame. Pass NULL for scale/scale_origin to get just
+the translate-and-rotate form.
+=============
+*/
+void R_EntityMatrix (entity_t *e, float *m, const vec3_t scale, const vec3_t scale_origin)
+{
+	float	sa, ca, sb, cb, sc, cc;
+	float	r00, r01, r02, r10, r11, r12, r20, r21, r22;
+
+	R_SinCos (e->angles[1], &sa, &ca);	/* yaw,   about Z */
+	R_SinCos (-e->angles[0], &sb, &cb);	/* pitch, about Y (negated, as in the original) */
+	R_SinCos (e->angles[2], &sc, &cc);	/* roll,  about X */
+
+	r00 = ca * cb;
+	r10 = sa * cb;
+	r20 = -sb;
+
+	r01 = -sa * cc + ca * sb * sc;
+	r11 =  ca * cc + sa * sb * sc;
+	r21 =  cb * sc;
+
+	r02 =  sa * sc + ca * sb * cc;
+	r12 = -ca * sc + sa * sb * cc;
+	r22 =  cb * cc;
+
+	if (scale)
+	{
+		m[0]  = r00 * scale[0];	m[1]  = r10 * scale[0];	m[2]  = r20 * scale[0];
+		m[4]  = r01 * scale[1];	m[5]  = r11 * scale[1];	m[6]  = r21 * scale[1];
+		m[8]  = r02 * scale[2];	m[9]  = r12 * scale[2];	m[10] = r22 * scale[2];
+	}
+	else
+	{
+		m[0]  = r00;	m[1]  = r10;	m[2]  = r20;
+		m[4]  = r01;	m[5]  = r11;	m[6]  = r21;
+		m[8]  = r02;	m[9]  = r12;	m[10] = r22;
+	}
+
+	if (scale_origin)
+	{
+		m[12] = e->origin[0] + r00 * scale_origin[0] + r01 * scale_origin[1] + r02 * scale_origin[2];
+		m[13] = e->origin[1] + r10 * scale_origin[0] + r11 * scale_origin[1] + r12 * scale_origin[2];
+		m[14] = e->origin[2] + r20 * scale_origin[0] + r21 * scale_origin[1] + r22 * scale_origin[2];
+	}
+	else
+	{
+		m[12] = e->origin[0];
+		m[13] = e->origin[1];
+		m[14] = e->origin[2];
+	}
+
+	m[3] = m[7] = m[11] = 0.0f;
+	m[15] = 1.0f;
+}
+
 void R_RotateForEntity (entity_t *e)
 {
-    glTranslatef (e->origin[0],  e->origin[1],  e->origin[2]);
+	float	m[16];
 
-    glRotatef (e->angles[1],  0, 0, 1);
-    glRotatef (-e->angles[0],  0, 1, 0);
-    glRotatef (e->angles[2],  1, 0, 0);
+	R_EntityMatrix (e, m, NULL, NULL);
+	glMultMatrixf (m);
+}
+
+/*
+=============
+R_RotateForAliasEntity -- NOVA
+
+Folds R_RotateForEntity + glTranslatef(scale_origin) + glScalef(scale) into
+a single matrix multiply.
+=============
+*/
+void R_RotateForAliasEntity (entity_t *e, aliashdr_t *paliashdr)
+{
+	float	m[16];
+
+	R_EntityMatrix (e, m, paliashdr->scale, paliashdr->scale_origin);
+	glMultMatrixf (m);
 }
 
 /*
@@ -333,12 +456,11 @@ R_Clear -- johnfitz -- rewritten and gutted
 */
 void R_Clear (void)
 {
-	extern int gl_stencilbits;
 	unsigned int clearbits;
 
 	clearbits = GL_DEPTH_BUFFER_BIT;
 	if (gl_clear.value) clearbits |= GL_COLOR_BUFFER_BIT;
-	if (gl_stencilbits) clearbits |= GL_STENCIL_BUFFER_BIT;
+	//if (gl_stencilbits) clearbits |= GL_STENCIL_BUFFER_BIT;
 	glClear (clearbits);
 }
 

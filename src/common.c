@@ -1054,7 +1054,7 @@ void COM_CheckRegistered (void)
 		if (pop[i] != (unsigned short)BigShort (check[i]))
 			Sys_Error ("Corrupted data file.");
 
-	Cvar_Set ("cmdline", com_cmdline+1); //johnfitz -- eliminate leading space
+	Cvar_Set ("cmdline", com_cmdline); //johnfitz -- eliminate leading space
 	Cvar_Set ("registered", "1");
 	static_registered = 1;
 	Con_Printf ("Playing registered version.\n");
@@ -1074,25 +1074,24 @@ void COM_InitArgv (int argc, char **argv)
 	qboolean        safe;
 	int             i, j, n;
 
-// reconstitute the command line for the cmdline externally visible cvar
+	// reconstitute the command line for the cmdline externally visible cvar
 	n = 0;
-
-	for (j=0 ; (j<MAX_NUM_ARGVS) && (j< argc) ; j++)
+	for (j=1 ; (j<MAX_NUM_ARGVS) && (j<argc) ; j++)	/* was j=0 -- skip argv[0] */
 	{
 		i = 0;
-
 		while ((n < (CMDLINE_LENGTH - 1)) && argv[j][i])
-		{
 			com_cmdline[n++] = argv[j][i++];
-		}
-
 		if (n < (CMDLINE_LENGTH - 1))
 			com_cmdline[n++] = ' ';
 		else
 			break;
 	}
 
-	com_cmdline[n-1] = 0; //johnfitz -- kill the trailing space
+	if (n > 0) {
+		com_cmdline[n-1] = 0;	/* kill the trailing space */
+	} else {
+		com_cmdline[0] = 0;	/* no arguments at all */
+	}
 
 	safe = false;
 
@@ -1595,7 +1594,6 @@ byte *COM_LoadFile (char *path, int usehunk)
 
 	((byte *)buf)[len] = 0;
 
-	Draw_BeginDisc ();
 	Sys_FileRead (h, buf, len);
 	COM_CloseFile (h);
 

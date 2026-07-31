@@ -24,15 +24,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 void SCR_Init (void);
 void SCR_UpdateScreen (void);
 void SCR_LoadPics (void);
-
 void SCR_SizeUp (void);
 void SCR_SizeDown (void);
 void SCR_BringDownConsole (void);
 void SCR_CenterPrint (char *str);
-
 void SCR_BeginLoadingPlaque (void);
 void SCR_EndLoadingPlaque (void);
-
 int SCR_ModalMessage (char *text, float timeout); //johnfitz -- added timeout
 
 extern	float		scr_con_current;
@@ -42,15 +39,10 @@ extern	int			sb_lines;
 
 extern	int			clearnotify;	// set to 0 whenever notify text is drawn
 extern	qboolean	scr_disabled_for_loading;
-extern	qboolean	scr_skipupdate;
 
 extern	cvar_t		scr_viewsize;
+extern	cvar_t 		scr_viewsize;
 
-extern cvar_t scr_viewsize;
-
-extern qboolean		block_drawing;
-
-void SCR_UpdateWholeScreen (void);
 
 //johnfitz -- stuff for 2d drawing control
 #define CANVAS_DEFAULT 0

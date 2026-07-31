@@ -93,7 +93,7 @@ cvar_t		scr_showram = {"showram","1"};
 cvar_t		scr_showturtle = {"showturtle","0"};
 cvar_t		scr_showpause = {"showpause","1"};
 cvar_t		scr_printspeed = {"scr_printspeed","8"};
-cvar_t		gl_triplebuffer = {"gl_triplebuffer", "1", true };
+
 
 extern	cvar_t	crosshair;
 
@@ -106,15 +106,11 @@ qpic_t		*scr_turtle;
 int			clearconsole;
 int			clearnotify;
 
-viddef_t	vid;				// global video state
-
 vrect_t		scr_vrect;
 
 qboolean	scr_disabled_for_loading;
 qboolean	scr_drawloading;
 float		scr_disabled_time;
-
-qboolean	block_drawing;
 
 int	scr_tileclear_updates = 0; //johnfitz
 
@@ -384,7 +380,6 @@ void SCR_Init (void)
 	Cvar_RegisterVariable (&scr_showpause);
 	Cvar_RegisterVariable (&scr_centertime);
 	Cvar_RegisterVariable (&scr_printspeed);
-	Cvar_RegisterVariable (&gl_triplebuffer);
 
 	Cmd_AddCommand ("screenshot",SCR_ScreenShot_f);
 	Cmd_AddCommand ("sizeup",SCR_SizeUp_f);
@@ -890,13 +885,6 @@ needs almost the entire 256k of stack space!
 */
 void SCR_UpdateScreen (void)
 {
-	// vrect_t		vrect; unused -- kristian
-
-	if (block_drawing)
-		return;
-
-	vid.numpages = 2 + (gl_triplebuffer.value ? 1 : 0); //johnfitz -- in case gl_triplebuffer is not 0 or 1
-
 	if (scr_disabled_for_loading)
 	{
 		if (realtime - scr_disabled_time > 60)

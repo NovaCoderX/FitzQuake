@@ -22,26 +22,26 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
-#define MAX_PARTICLES			2048	// default max # of particles at one
+#define MAX_PARTICLES			256		// default max # of particles at one
 										//  time
-#define ABSOLUTE_MIN_PARTICLES	512		// no fewer than this no matter what's
+#define MIN_PARTICLES			8		// no fewer than this no matter what's
 										//  on the command line
+#define DEFAULT_PARTICLES		16
 
-int		ramp1[8] = {0x6f, 0x6d, 0x6b, 0x69, 0x67, 0x65, 0x63, 0x61};
-int		ramp2[8] = {0x6f, 0x6e, 0x6d, 0x6c, 0x6b, 0x6a, 0x68, 0x66};
-int		ramp3[8] = {0x6d, 0x6b, 6, 5, 4, 3};
+static int ramp1[8] = {0x6f, 0x6d, 0x6b, 0x69, 0x67, 0x65, 0x63, 0x61};
+static int ramp2[8] = {0x6f, 0x6e, 0x6d, 0x6c, 0x6b, 0x6a, 0x68, 0x66};
+static int ramp3[8] = {0x6d, 0x6b, 6, 5, 4, 3};
 
 particle_t	*active_particles, *free_particles, *particles;
 
-vec3_t			r_pright, r_pup, r_ppn;
+vec3_t r_pright, r_pup, r_ppn;
 
-int			r_numparticles;
+static int r_numparticles = DEFAULT_PARTICLES;
 
 gltexture_t *particletexture, *particletexture1, *particletexture2, *particletexture3, *particletexture4; //johnfitz
 float texturescalefactor; //johnfitz -- compensate for apparent size of different particle textures
 
-cvar_t	r_particles = {"r_particles","1", true}; //johnfitz
-cvar_t	r_quadparticles = {"r_quadparticles","1", true}; //johnfitz
+cvar_t r_particles = {"r_particles","1", true}; //johnfitz
 
 /*
 ===============
@@ -155,19 +155,22 @@ void R_InitParticles (void)
 	if (i)
 	{
 		r_numparticles = (int)(Q_atoi(com_argv[i+1]));
-		if (r_numparticles < ABSOLUTE_MIN_PARTICLES)
-			r_numparticles = ABSOLUTE_MIN_PARTICLES;
+		if (r_numparticles < MIN_PARTICLES) {
+			r_numparticles = MIN_PARTICLES;
+		}
+
+		if (r_numparticles > MAX_PARTICLES) {
+			r_numparticles = MAX_PARTICLES;
+		}
 	}
 	else
 	{
-		r_numparticles = MAX_PARTICLES;
+		r_numparticles = DEFAULT_PARTICLES;
 	}
 
-	particles = (particle_t *)
-			Hunk_AllocName (r_numparticles * sizeof(particle_t), "particles");
+	particles = (particle_t *)Hunk_AllocName (r_numparticles * sizeof(particle_t), "particles");
 
 	Cvar_RegisterVariableEx (&r_particles, R_SetParticleTexture_f); //johnfitz
-	Cvar_RegisterVariable (&r_quadparticles); //johnfitz
 
 	R_InitParticleTextures (); //johnfitz
 }
@@ -178,10 +181,9 @@ R_EntityParticles
 ===============
 */
 #define NUMVERTEXNORMALS	162
-extern	float	r_avertexnormals[NUMVERTEXNORMALS][3];
-vec3_t	avelocities[NUMVERTEXNORMALS];
-float	beamlength = 16;
-
+extern float r_avertexnormals[NUMVERTEXNORMALS][3];
+static vec3_t avelocities[NUMVERTEXNORMALS];
+static float beamlength = 16;
 
 
 void R_EntityParticles (entity_t *ent)
@@ -199,8 +201,9 @@ void R_EntityParticles (entity_t *ent)
 
 	if (!avelocities[0][0])
 	{
-	for (i=0 ; i<NUMVERTEXNORMALS*3 ; i++)
-	avelocities[0][i] = (rand()&255) * 0.01;
+		for (i=0 ; i<NUMVERTEXNORMALS*3 ; i++) {
+			avelocities[0][i] = (rand()&255) * 0.01;
+		}
 	}
 
 	for (i=0 ; i<NUMVERTEXNORMALS ; i++)
@@ -819,7 +822,7 @@ void R_DrawParticles (void)
 {
 	particle_t		*p;
 	float			scale;
-	vec3_t			up, right, p_up, p_right, p_upright; //johnfitz -- p_ vectors
+	vec3_t			up, right, p_up, p_right; //johnfitz -- p_ vectors
 	byte			color[4]; //johnfitz -- particle transparency
 	extern	cvar_t	r_particles; //johnfitz
     /* unused -- kristian
@@ -837,88 +840,41 @@ void R_DrawParticles (void)
 	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 	glDepthMask (GL_FALSE); //johnfitz -- fix for particle z-buffer bug
 
-	if (r_quadparticles.value) //johnitz -- quads save fillrate
+	glBegin (GL_TRIANGLES);
+	for (p=active_particles ; p ; p=p->next)
 	{
-		glBegin (GL_QUADS);
-		for (p=active_particles ; p ; p=p->next)
-		{
-			// hack a scale up to keep particles from disapearing
-			scale = (p->org[0] - r_origin[0]) * vpn[0]
-				  + (p->org[1] - r_origin[1]) * vpn[1]
-				  + (p->org[2] - r_origin[2]) * vpn[2];
-			if (scale < 20)
-				scale = 1 + 0.08; //johnfitz -- added .08 to be consistent
-			else
-				scale = 1 + scale * 0.004;
+		// hack a scale up to keep particles from disapearing
+		scale = (p->org[0] - r_origin[0]) * vpn[0]
+			  + (p->org[1] - r_origin[1]) * vpn[1]
+			  + (p->org[2] - r_origin[2]) * vpn[2];
+		if (scale < 20)
+			scale = 1 + 0.08; //johnfitz -- added .08 to be consistent
+		else
+			scale = 1 + scale * 0.004;
 
-			scale /= 2.0; //quad is half the size of triangle
+		scale *= texturescalefactor; //johnfitz -- compensate for apparent size of different particle textures
 
-			scale *= texturescalefactor; //johnfitz -- compensate for apparent size of different particle textures
+		//johnfitz -- particle transparency and fade out
+		*(int *)color = d_8to24table[(int)p->color];
+		//alpha = CLAMP(0, p->die + 0.5 - cl.time, 1);
+		color[3] = 255; //(int)(alpha * 255);
+		glColor4ubv(color);
+		//johnfitz
 
-			//johnfitz -- particle transparency and fade out
-			*(int *)color = d_8to24table[(int)p->color];
-			//alpha = CLAMP(0, p->die + 0.5 - cl.time, 1);
-			color[3] = 255; //(int)(alpha * 255);
-			glColor4ubv(color);
-			//johnfitz
+		glTexCoord2f (0,0);
+		glVertex3fv (p->org);
 
-			glTexCoord2f (0,0);
-			glVertex3fv (p->org);
+		glTexCoord2f (1,0);
+		VectorMA (p->org, scale, up, p_up);
+		glVertex3fv (p_up);
 
-			glTexCoord2f (0.5,0);
-			VectorMA (p->org, scale, up, p_up);
-			glVertex3fv (p_up);
+		glTexCoord2f (0,1);
+		VectorMA (p->org, scale, right, p_right);
+		glVertex3fv (p_right);
 
-			glTexCoord2f (0.5,0.5);
-			VectorMA (p_up, scale, right, p_upright);
-			glVertex3fv (p_upright);
-
-			glTexCoord2f (0,0.5);
-			VectorMA (p->org, scale, right, p_right);
-			glVertex3fv (p_right);
-
-			rs_particles++; //johnfitz //FIXME: just use r_numparticles
-		}
-		glEnd ();
+		rs_particles++; //johnfitz //FIXME: just use r_numparticles
 	}
-	else //johnitz --  triangles save verts
-	{
-		glBegin (GL_TRIANGLES);
-		for (p=active_particles ; p ; p=p->next)
-		{
-			// hack a scale up to keep particles from disapearing
-			scale = (p->org[0] - r_origin[0]) * vpn[0]
-				  + (p->org[1] - r_origin[1]) * vpn[1]
-				  + (p->org[2] - r_origin[2]) * vpn[2];
-			if (scale < 20)
-				scale = 1 + 0.08; //johnfitz -- added .08 to be consistent
-			else
-				scale = 1 + scale * 0.004;
-
-			scale *= texturescalefactor; //johnfitz -- compensate for apparent size of different particle textures
-
-			//johnfitz -- particle transparency and fade out
-			*(int *)color = d_8to24table[(int)p->color];
-			//alpha = CLAMP(0, p->die + 0.5 - cl.time, 1);
-			color[3] = 255; //(int)(alpha * 255);
-			glColor4ubv(color);
-			//johnfitz
-
-			glTexCoord2f (0,0);
-			glVertex3fv (p->org);
-
-			glTexCoord2f (1,0);
-			VectorMA (p->org, scale, up, p_up);
-			glVertex3fv (p_up);
-
-			glTexCoord2f (0,1);
-			VectorMA (p->org, scale, right, p_right);
-			glVertex3fv (p_right);
-
-			rs_particles++; //johnfitz //FIXME: just use r_numparticles
-		}
-		glEnd ();
-	}
+	glEnd ();
 
 	glDepthMask (GL_TRUE); //johnfitz -- fix for particle z-buffer bug
 	glDisable (GL_BLEND);
@@ -936,7 +892,7 @@ void R_DrawParticles_ShowTris (void)
 {
 	particle_t		*p;
 	float			scale;
-	vec3_t			up, right, p_up, p_right, p_upright;
+	vec3_t			up, right, p_up, p_right;
 	extern	cvar_t	r_particles;
 
 	if (!r_particles.value)
@@ -945,63 +901,27 @@ void R_DrawParticles_ShowTris (void)
 	VectorScale (vup, 1.5, up);
 	VectorScale (vright, 1.5, right);
 
-	if (r_quadparticles.value)
+	glBegin (GL_TRIANGLES);
+	for (p=active_particles ; p ; p=p->next)
 	{
-		for (p=active_particles ; p ; p=p->next)
-		{
-			glBegin (GL_TRIANGLE_FAN);
+		// hack a scale up to keep particles from disapearing
+		scale = (p->org[0] - r_origin[0]) * vpn[0]
+			  + (p->org[1] - r_origin[1]) * vpn[1]
+			  + (p->org[2] - r_origin[2]) * vpn[2];
+		if (scale < 20)
+			scale = 1 + 0.08; //johnfitz -- added .08 to be consistent
+		else
+			scale = 1 + scale * 0.004;
 
-			// hack a scale up to keep particles from disapearing
-			scale = (p->org[0] - r_origin[0]) * vpn[0]
-				  + (p->org[1] - r_origin[1]) * vpn[1]
-				  + (p->org[2] - r_origin[2]) * vpn[2];
-			if (scale < 20)
-				scale = 1 + 0.08; //johnfitz -- added .08 to be consistent
-			else
-				scale = 1 + scale * 0.004;
+		scale *= texturescalefactor; //compensate for apparent size of different particle textures
 
-			scale /= 2.0; //quad is half the size of triangle
+		glVertex3fv (p->org);
 
-			scale *= texturescalefactor; //compensate for apparent size of different particle textures
+		VectorMA (p->org, scale, up, p_up);
+		glVertex3fv (p_up);
 
-			glVertex3fv (p->org);
-
-			VectorMA (p->org, scale, up, p_up);
-			glVertex3fv (p_up);
-
-			VectorMA (p_up, scale, right, p_upright);
-			glVertex3fv (p_upright);
-
-			VectorMA (p->org, scale, right, p_right);
-			glVertex3fv (p_right);
-
-			glEnd ();
-		}
+		VectorMA (p->org, scale, right, p_right);
+		glVertex3fv (p_right);
 	}
-	else
-	{
-		glBegin (GL_TRIANGLES);
-		for (p=active_particles ; p ; p=p->next)
-		{
-			// hack a scale up to keep particles from disapearing
-			scale = (p->org[0] - r_origin[0]) * vpn[0]
-				  + (p->org[1] - r_origin[1]) * vpn[1]
-				  + (p->org[2] - r_origin[2]) * vpn[2];
-			if (scale < 20)
-				scale = 1 + 0.08; //johnfitz -- added .08 to be consistent
-			else
-				scale = 1 + scale * 0.004;
-
-			scale *= texturescalefactor; //compensate for apparent size of different particle textures
-
-			glVertex3fv (p->org);
-
-			VectorMA (p->org, scale, up, p_up);
-			glVertex3fv (p_up);
-
-			VectorMA (p->org, scale, right, p_right);
-			glVertex3fv (p_right);
-		}
-		glEnd ();
-	}
+	glEnd ();
 }

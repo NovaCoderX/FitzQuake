@@ -45,7 +45,7 @@ float	turbsin[] =
 
 msurface_t	*warpface;
 
-cvar_t gl_subdivide_size = {"gl_subdivide_size", "128", true};
+cvar_t gl_subdivide_size = {"gl_subdivide_size", "256", true};
 
 void BoundPoly (int numverts, float *verts, vec3_t mins, vec3_t maxs)
 {

@@ -1026,7 +1026,7 @@ again:
 
 #define	SLIDER_RANGE	10
 
-int		options_cursor;
+static int options_cursor = 0;
 
 void M_Menu_Options_f (void)
 {
@@ -1043,7 +1043,6 @@ void M_Menu_Options_f (void)
 #endif
 }
 
-
 void M_AdjustSliders (int dir)
 {
 	S_LocalSound ("misc/menu3.wav");
@@ -1059,12 +1058,12 @@ void M_AdjustSliders (int dir)
 		Cvar_SetValue ("viewsize", scr_viewsize.value);
 		break;
 	case 4:	// gamma
-		/*v_gamma.value -= dir * 0.05;
-		if (v_gamma.value < 0.5)
-			v_gamma.value = 0.5;
-		if (v_gamma.value > 1)
-			v_gamma.value = 1;
-		Cvar_SetValue ("gamma", v_gamma.value);*/
+		vid_gamma.value -= dir * 0.05;
+		if (vid_gamma.value < 0.5)
+			vid_gamma.value = 0.5;
+		if (vid_gamma.value > 1)
+			vid_gamma.value = 1;
+		Cvar_SetValue ("gamma", vid_gamma.value);
 		break;
 	case 5:	// mouse speed
 		sensitivity.value += dir * 0.5;
@@ -1119,12 +1118,6 @@ void M_AdjustSliders (int dir)
 	case 11:	// lookstrafe
 		Cvar_SetValue ("lookstrafe", !lookstrafe.value);
 		break;
-
-#ifdef _WIN32
-	case 13:	// _windowed_mouse
-		Cvar_SetValue ("_windowed_mouse", !_windowed_mouse.value);
-		break;
-#endif
 	}
 }
 
@@ -1208,14 +1201,6 @@ void M_Options_Draw (void)
 
 	if (vid_menudrawfn)
 		M_Print (16, 128, "         Video Options");
-
-#ifdef _WIN32
-	if (mode_state == MS_WINDOWED)
-	{
-		M_Print (16, 136, "             Use Mouse");
-		M_DrawCheckbox (220, 136, _windowed_mouse.value);
-	}
-#endif
 
 // cursor
 	M_DrawCharacter (200, 32 + options_cursor*8, 12+((int)(realtime*4)&1));
@@ -1381,7 +1366,7 @@ void M_UnbindCommand (char *command)
 
 void M_Keys_Draw (void)
 {
-	int		i, l;
+	int		i;
 	int		keys[2];
 	char	*name;
 	int		x, y;
@@ -1402,7 +1387,7 @@ void M_Keys_Draw (void)
 
 		M_Print (16, y, bindnames[i][1]);
 
-		l = strlen (bindnames[i][0]);
+		//l = strlen (bindnames[i][0]);
 
 		M_FindKeysForCommand (bindnames[i][0], keys);
 
@@ -3026,24 +3011,20 @@ void M_Draw (void)
 
 	if (!m_recursiveDraw)
 	{
-		//scr_copyeverything = 1;
-
 		if (scr_con_current)
 		{
-			//Draw_ConsoleBackground (vid.height);
-			//VID_UnlockBuffer ();
-			//S_ExtraUpdate ();
-			//VID_LockBuffer ();
+			Draw_ConsoleBackground ();
+			S_ExtraUpdate ();
 		}
-		else
-			Draw_FadeScreen ();
 
-		//scr_fullupdate = 0;
+		Draw_FadeScreen (); //johnfitz -- fade even if console fills screen
 	}
 	else
 	{
 		m_recursiveDraw = false;
 	}
+
+	GL_SetCanvas (CANVAS_MENU); //johnfitz
 
 	switch (menu_state)
 	{
@@ -3128,10 +3109,6 @@ void M_Draw (void)
 		S_LocalSound ("misc/menu2.wav");
 		m_entersound = false;
 	}
-
-	//VID_UnlockBuffer ();
-	//S_ExtraUpdate ();
-	//VID_LockBuffer ();
 }
 
 

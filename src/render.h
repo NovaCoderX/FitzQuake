@@ -105,9 +105,6 @@ typedef struct
 //
 // refresh
 //
-extern	int		reinit_surfcache;
-
-
 extern	refdef_t	r_refdef;
 extern vec3_t	r_origin, vpn, vright, vup;
 
@@ -158,10 +155,12 @@ void R_DrawParticles_ShowTris (void);
 void R_DrawSpriteModel (entity_t *e);
 void R_DrawTextureChains_ShowTris (void);
 void R_RotateForEntity (entity_t *e);
+void R_EntityMatrix (entity_t *e, float *m, const vec3_t scale, const vec3_t scale_origin);	//NOVA
+void R_SinCos (float degrees, float *s, float *c);	//NOVA
+void R_BuildAngleTables (void);	//NOVA
 void R_StoreEfrags (efrag_t **ppefrag);
 void R_UpdateWarpTextures (void);
 void R_UploadLightmap(int lmap);
-
 
 void Fog_Init (void);
 void Fog_EnableGFog (void);
@@ -177,15 +176,8 @@ void Sky_NewMap (void);
 void Sky_DrawSky (void);
 void Sky_DrawSkyBox (void);
 
-//
-// surface cache related
-//
-extern	int		reinit_surfcache;	// if 1, surface cache is currently empty and
-extern qboolean	r_cache_thrash;	// set if thrashing the surface cache
 
-int	D_SurfaceCacheForRes (int width, int height);
-void D_FlushCaches (void);
-void D_DeleteSurfaceCache (void);
-void D_InitCaches (void *buffer, int size);
-void R_SetVrect (vrect_t *pvrect, vrect_t *pvrectin, int lineadj);
+
+
+
 

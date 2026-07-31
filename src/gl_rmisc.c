@@ -106,11 +106,11 @@ Grab six views for environment mapping tests
 */
 void R_Envmap_f (void)
 {
-	byte	buffer[256*256*4];
+	static byte	buffer[256*256*4];
 	// char	name[1024]; unused -- kristian
 
-	glDrawBuffer  (GL_FRONT);
-	glReadBuffer  (GL_FRONT);
+	glDrawBuffer  (GL_BACK);
+	glReadBuffer  (GL_BACK);
 	envmap = true;
 
 	r_refdef.vrect.x = 0;
@@ -219,6 +219,8 @@ void R_Init (void)
 	//johnfitz
 
 	Cvar_RegisterVariable (&gl_subdivide_size); //johnfitz -- moved here from gl_model.c
+
+	R_BuildAngleTables (); //NOVA -- build before anything calls R_SinCos
 
 	R_InitParticles ();
 	R_SetClearColor_f (); //johnfitz
@@ -332,9 +334,6 @@ void R_TimeRefresh_f (void)
 	vrect_t		vr;
     */
 
-	glDrawBuffer  (GL_FRONT);
-	glFinish ();
-
 	start = Sys_FloatTime ();
 	for (i=0 ; i<128 ; i++)
 	{
@@ -346,11 +345,6 @@ void R_TimeRefresh_f (void)
 	stop = Sys_FloatTime ();
 	time = stop-start;
 	Con_Printf ("%f seconds (%f fps)\n", time, 128/time);
-
-	glDrawBuffer (GL_BACK);
-	GL_EndRendering ();
 }
 
-void D_FlushCaches (void)
-{
-}
+
