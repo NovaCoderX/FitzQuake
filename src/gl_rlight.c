@@ -83,10 +83,27 @@ void AddLightBlend (float r, float g, float b, float a2)
 	v_blend[2] = v_blend[2]*(1-a2) + b*a2;
 }
 
+// Pre-calculated sine and cosine values for a 16-segment triangle fan
+// Calculated as: (i / 16.0) * M_PI * 2 for i in 0 to 16
+static const float dlight_cos[17] = {
+    1.000000f,  0.923880f,  0.707107f,  0.382683f,
+    0.000000f, -0.382683f, -0.707107f, -0.923880f,
+   -1.000000f, -0.923880f, -0.707107f, -0.382683f,
+   -0.000000f,  0.382683f,  0.707107f,  0.923880f,
+    1.000000f
+};
+
+static const float dlight_sin[17] = {
+    0.000000f,  0.382683f,  0.707107f,  0.923880f,
+    1.000000f,  0.923880f,  0.707107f,  0.382683f,
+    0.000000f, -0.382683f, -0.707107f, -0.923880f,
+   -1.000000f, -0.923880f, -0.707107f, -0.382683f,
+   -0.000000f
+};
+
 void R_RenderDlight (dlight_t *light)
 {
 	int		i, j;
-	float	a;
 	vec3_t	v;
 	float	rad;
 
@@ -100,17 +117,21 @@ void R_RenderDlight (dlight_t *light)
 	}
 
 	glBegin (GL_TRIANGLE_FAN);
-	glColor3f (0.2,0.1,0.0);
-	for (i=0 ; i<3 ; i++)
+	glColor3f (0.2f, 0.1f, 0.0f);
+
+	for (i=0 ; i<3 ; i++) {
 		v[i] = light->origin[i] - vpn[i]*rad;
+	}
+
 	glVertex3fv (v);
-	glColor3f (0,0,0);
+	glColor3f (0.0f, 0.0f, 0.0f);
+
+	// Optimized loop using pre-calculated trig values
 	for (i=16 ; i>=0 ; i--)
 	{
-		a = i/16.0 * M_PI*2;
 		for (j=0 ; j<3 ; j++)
-			v[j] = light->origin[j] + vright[j]*cos(a)*rad
-				+ vup[j]*sin(a)*rad;
+			v[j] = light->origin[j] + vright[j]*dlight_cos[i]*rad
+				+ vup[j]*dlight_sin[i]*rad;
 		glVertex3fv (v);
 	}
 	glEnd ();
