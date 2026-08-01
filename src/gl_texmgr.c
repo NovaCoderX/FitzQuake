@@ -86,6 +86,7 @@ typedef struct
 	int minfilter;
 	char *name;
 } glmode_t;
+
 glmode_t modes[] = {
 	{GL_NEAREST, GL_NEAREST,				"GL_NEAREST"},
 	{GL_NEAREST, GL_NEAREST_MIPMAP_NEAREST,	"GL_NEAREST_MIPMAP_NEAREST"},
@@ -94,6 +95,7 @@ glmode_t modes[] = {
 	{GL_LINEAR,  GL_LINEAR_MIPMAP_NEAREST,	"GL_LINEAR_MIPMAP_NEAREST"},
 	{GL_LINEAR,  GL_LINEAR_MIPMAP_LINEAR,	"GL_LINEAR_MIPMAP_LINEAR"},
 };
+
 #define NUM_GLMODES 6
 int gl_texturemode = 1; // GL_NEAREST_MIPMAP_NEAREST
 
