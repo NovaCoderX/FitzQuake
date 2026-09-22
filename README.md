@@ -1,5 +1,5 @@
 # FitzQuake
-Amiga 68k port of FitzQuake using my AmiQuake SDL port as a base.
+Amiga 68k port of FitzQuake using my own AmiQuake SDL port as a base.
 
 https://www.kristianduske.com/fitzquake/
 
