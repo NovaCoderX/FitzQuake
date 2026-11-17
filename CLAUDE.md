@@ -76,22 +76,37 @@ see "Changes applied".)
 
 | Pass | GL state | NovaMesa triangle function |
 |---|---|---|
-| World, brush entities | unit 0 REPLACE (RGB, mipmapped nearest) + unit 1 lightmap (RGB, LINEAR), COMBINE modulate x2 | `dualtex_triangle` — integer fast path |
+| World, brush entities | unit 0 REPLACE (RGB, mipmapped nearest) + unit 1 lightmap (RGB, LINEAR), COMBINE modulate x2 | `dualtex_triangle` — integer fast path; the lightmap is stepped, not filtered per pixel |
 | Sky, flat pre-pass | untextured, flat | driver direct fill |
-| Sky, cloud layers | unit 0 REPLACE + unit 1 DECAL (RGBA), depth GEQUAL | `multitextured_triangle` — general float path |
-| Alias model, no fullbright pixels | one texture, COMBINE modulate x2 | `general_textured_triangle` — general float path |
-| Alias model with fullbright mask | unit 0 COMBINE x2 + unit 1 DECAL, blend on | `multitextured_triangle` — general float path |
+| Sky, cloud layers | unit 0 REPLACE + unit 1 DECAL (RGBA), depth GEQUAL | `dualtex_triangle`, decal mode |
+| Alias model, no fullbright pixels | one texture, COMBINE modulate x2 | `persp_textured_triangle` (scaled modulate) |
+| Alias model with fullbright mask | unit 0 COMBINE x2 + unit 1 DECAL, blend on | `dualtex_triangle`, decal mode with vertex colour |
 | World fullbright ("glow") pass | one RGBA texture, blend | `persp_textured_triangle` + one-pass blend |
 | Water (`r_oldwater 1`), particles, sprites, 2D | one texture, not mipmapped | `persp_textured_triangle`, which uses its affine loop wherever that is within half a pixel (all 2D) |
-| View blend (`V_PolyBlend`); dlight blobs with `gl_flashblend 1` | untextured, blend | `flat_rgba_triangle` / `smooth_rgba_triangle` through the generic span code |
+| View blend (`V_PolyBlend`) | untextured, flat, blend | driver `flat_blend_transparency_triangle` |
+| Dlight blobs with `gl_flashblend 1` | untextured, smooth, blend | `smooth_rgba_triangle` through the generic span code |
+
+Since NovaMesa's fifth round nothing FitzQuake draws by default is on the
+general float paths (`general_textured_triangle`, `multitextured_triangle`).
+If a change here puts something back on them, that is a regression: check
+with a `-DDEBUG` NovaMesa build, or look for those two names in a profile.
 
 ## Where the time goes (measured)
 
-These measurements were taken on commit `fc9432e`, before the fixes listed
-under "Changes applied"; the defaults then were `gl_flashblend 1` and
-`GL_FASTEST`. With the changes, demo1 is 30.02 G instructions (-2.8%) and the
-sky-heavy view below renders 4.2% cheaper. The proportions are otherwise
-unchanged.
+These measurements were taken on commit `fc9432e` against the NovaMesa of that
+time: before the fixes listed under "Changes applied" (the defaults then were
+`gl_flashblend 1` and `GL_FASTEST`) and before NovaMesa's fifth round. They
+are kept because they are what both were derived from. Where things stand
+now, same method:
+
+| | then | after the FitzQuake changes | after NovaMesa's fifth round |
+|---|---|---|---|
+| `timedemo demo1` | 30.87 G | 29.77 G | 23.93 G |
+| `timedemo demo2` | | 33.46 G | 26.45 G |
+
+That is -22% on demo1 from the start. The current demo1 profile is
+`dualtex_triangle` 64% (texturing loops and their per-16-pixel setup), its
+triangle setup 10%, the driver's combined depth-test-and-write loop 9%.
 
 Method: the engine built for the host as a 32-bit program against NovaMesa,
 with a stub SDL (`test/hostbench/`, below), `timedemo` on the shareware demos
@@ -188,8 +203,8 @@ A sky pixel currently costs about 2.6 times what a world pixel costs.
    worth doing (see "Measured and not worth doing").
 4. What there was on the FitzQuake side added up to a few percent and has been
    applied (below). Beyond that there are only knobs that trade appearance for
-   speed. The larger remaining gains are in NovaMesa and are listed separately,
-   with numbers.
+   speed. The larger gains were in NovaMesa and have since been made there
+   (see "What was done in NovaMesa from this profile").
 
 ## Changes applied
 
@@ -336,41 +351,29 @@ For the owner to decide; none is applied.
   the first thing to rule out if a setup is unexpectedly slow. (The command
   takes names or 1-based numbers; the variable in `gl_texmgr.c` is 0-based.)
 
-## Where the remaining speed is: NovaMesa
+## What was done in NovaMesa from this profile
 
-These are leads, measured here but not implemented. All are selected by GL
-state alone, as NovaMesa's rules require.
+The leads this section used to list were taken up in NovaMesa's fifth round
+(its `CLAUDE.md` has the details, the measurements and the variants that were
+rejected). Instruction counts are demo1 on x86; none of it has been run as
+68k code or on a PiStorm yet.
 
-1. **Lightmap filtering in `dualtex_span`.** 41% of all instructions. A lightmap
-   texel covers 16 texture texels, so on most surfaces it is magnified many
-   times and neighbouring pixels get almost the same light. Prototype (in
-   `dualtex_span`, unit 0 nearest and unit 1 linear only): when the lightmap
-   step is at most 1/8 texel per pixel, filter it every 4th pixel and
-   interpolate the three light values in between; the last run of a span ends
-   on the span's last pixel so no sample is taken outside the surface's
-   lightmap block. Result on demo1: -6.4% instructions, 8% of pixels differ,
-   0.001% by more than 2/255, maximum 3/255. With the threshold at 1/4 texel:
-   -8.6%, maximum 5/255. The 64-bit corridor benchmark gives -10.6%; the 32-bit
-   x86 build is short of registers and spills the interpolators, so a 68k
-   should land nearer the higher figure. Ceiling: -22%.
-2. **Direct blended flat fill in the driver.** `V_PolyBlend` goes through
-   `flat_rgba_triangle` and the generic span code at about 98 instructions per
-   pixel for a constant colour. A driver function for "untextured, flat,
-   blend `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA`, nothing else" should need about 15.
-   Worth about 5% of an average demo and most of the 19% while a flash is
-   active. This is the "direct blended triangles" idea in NovaMesa's notes,
-   which was shelved for lack of an application that needed it.
-3. **Sky state.** REPLACE + DECAL (RGBA) on unit 1 falls to
-   `multitextured_triangle`. Adding DECAL on unit 1 to the dualtex path (also
-   already on NovaMesa's list) would cut a sky pixel to roughly the cost of a
-   world pixel, about a third of a sky-heavy frame.
-4. **A dualtex variant that tests and writes Z and ARGB itself**, for the plain
-   world state (depth LESS/LEQUAL with writes, no blend, alpha test, fog or
-   stencil). Removes most of the 13.5% spent in the generic span code after
-   texturing.
-5. **Single-unit `GL_COMBINE` modulate with RGB scale** (alias overbright) is
-   on the general float path. Only 1.4% here; it matters more where float is
-   slow.
+| Change | demo1 | Image |
+|---|---|---|
+| Lightmap stepped per texel instead of filtered per pixel | -9.0% | rounding only, at most 2/255 |
+| Direct flat blended triangles (`V_PolyBlend`) | -2.8% | identical |
+| Single-unit combine as scaled modulate (overbright models) | -0.8% | texel choice on models, 0.5% of pixels |
+| `GL_DECAL` second unit (masked models, sky) | -1.6%; a half-sky view -10% | texel choice at edges, 0.1% of pixels |
+| Depth test and write in one driver loop | -6.9% | identical |
+
+The lightmap prototype measured earlier in this file (filter every 4th pixel)
+was not what went in: over more frames it was wrong by up to 25/255 under
+dynamic lights. The exact per-texel version replaced it.
+
+What is left there is small: sharing the perspective divide between the two
+units, and writing pixels straight from the texturing loops. The sky is still
+expensive for its size because it is several hundred small quads a frame;
+`r_sky_quality` controls how many.
 
 ## Measured and not worth doing
 
