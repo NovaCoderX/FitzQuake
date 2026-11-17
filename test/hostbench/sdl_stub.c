@@ -9,6 +9,9 @@
 //   QUITFRAMES=n    exit after n buffer swaps (for "map xxx" runs)
 //   DUMPEVERY=n     write a PPM of the back buffer every n swaps
 //   DUMPPREFIX=p    file name prefix for those PPMs (default "shot")
+//   FRAMEHASH=file  write one line per frame, "frame-number hash", for the
+//                   whole back buffer: compares every frame of two builds
+//                   without storing screenshots (diff the two files)
 //   DUMPOFFSET=n    added to the frame number for DUMPEVERY and the file name.
 //                   Every console line printed during start-up costs one swap,
 //                   so two builds that print a different number of lines are
@@ -108,6 +111,13 @@ void SDL_GL_SwapBuffers(void)
 	int dumpoffset = getenv("DUMPOFFSET") ? atoi(getenv("DUMPOFFSET")) : 0;
 	frameno++; fake_ms += fake_step;
 	run_audio();
+	if (getenv("FRAMEHASH")) {
+		static FILE *hf; unsigned h = 2166136261u, *p = (unsigned*)actx->back_buffer; int i;
+		if (!hf) hf = fopen(getenv("FRAMEHASH"), "w");
+		glFinish();
+		for (i = 0; i < W*H; i++) h = (h ^ p[i]) * 16777619u;
+		if (hf) { fprintf(hf, "%d %08x\n", frameno + dumpoffset, h); fflush(hf); }
+	}
 	if (d && (frameno + dumpoffset) % atoi(d) == 0) {
 		char nm[256];
 		snprintf(nm, sizeof nm, "%s_%05d.ppm", getenv("DUMPPREFIX") ? getenv("DUMPPREFIX") : "shot", frameno + dumpoffset);

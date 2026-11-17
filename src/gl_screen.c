@@ -620,6 +620,13 @@ void SCR_DrawConsole (void)
 	{
 		Con_DrawConsole (scr_con_current, true);
 		clearconsole = 0;
+
+		//NOVA -- the console has just been drawn over the tile border, so the
+		//        border needs redrawing next frame even if the console is gone
+		//        by then. Every other overlay does this after drawing. The
+		//        console only asked before drawing (SCR_SetUpToDrawConsole),
+		//        and got away with it while vid.numpages was 2.
+		scr_tileclear_updates = 0;
 	}
 	else
 	{

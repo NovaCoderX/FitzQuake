@@ -19,7 +19,9 @@ CC=${CC:-gcc -m32}
 HB=$NM/test/hostbench; SRC=$NM/src
 MOBJ=$HERE/out/obj_mesa_$TAG; QOBJ=$HERE/out/obj_fq_$TAG
 MFLAGS="-O2 -g -fno-strict-aliasing -w -std=gnu99 $MESA_CFLAGS -include $HB/stub/libraries/Picasso96.h -I$HB/stub -I$SRC -I$SRC/amiga"
-QFLAGS="-O2 -g -fno-strict-aliasing -fno-optimize-sibling-calls -w -std=gnu89 -fcommon -U__i386__ $CFLAGS -I$HERE/stub -I$HB/stub"
+# __TIME__/__DATE__ are pinned because the engine prints them on the console,
+# which would make the first frames of any two builds differ.
+QFLAGS="-O2 -g -fno-strict-aliasing -fno-optimize-sibling-calls -w -std=gnu89 -fcommon -U__i386__ -Wno-builtin-macro-redefined -D__TIME__=\"00:00:00\" -D__DATE__=\"hostbench\" $CFLAGS -I$HERE/stub -I$HB/stub"
 mkdir -p "$MOBJ" "$QOBJ"
 for f in $SRC/*.c $SRC/swrast/*.c $SRC/swrast_setup/*.c $SRC/tnl/*.c $SRC/math/*.c $SRC/array_cache/*.c $SRC/amiga/*.c; do
   b=$(basename "$f" .c); case $b in m_debug_*) continue;; esac

@@ -288,7 +288,11 @@ int VID_SetMode (int modenum)
 	vid.height = modelist[modenum].height;
 	vid.conwidth = vid.width & 0xFFFFFFF8;
 	vid.conheight = vid.conwidth * vid.height / vid.width;
-	vid.numpages = 2;
+	// NOVA: was 2. This counts how many frames in a row the status bar and
+	// tile border are redrawn after a change, which is one per page when the
+	// display flips between two pages. Nova-Mesa has a single back buffer that
+	// is copied to the window and keeps its contents, so once is enough.
+	vid.numpages = 1;
 	vid.type = modelist[modenum].type;
 
 	if (mode_state == MODE_FULLSCREEN_DEFAULT) {

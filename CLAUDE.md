@@ -217,10 +217,12 @@ Bug fixes:
    so they were dropped from the next `config.cfg`. They are registered first
    now.
 5. **`Sys_Printf` and `Sys_Error` could overflow their 2048-byte buffers**
-   (`sys_sdl.c`); both use `vsnprintf` now. Left alone on purpose: the
-   `logfile` cvar still defaults to 1 and the file is still unbuffered, so
-   every console line is one DOS write. That is the owner's choice between a
-   log that survives a crash and one that costs nothing.
+   (`sys_sdl.c`); both use `vsnprintf` now. The console log (`logfile`, on by
+   default) is buffered with an 8 K buffer instead of unbuffered, because
+   disk writes are slow on a 68k: over demo1 it goes from 298 writes to 3.
+   It is flushed at the start of `Sys_Quit` and `Sys_Error`; only a hard
+   crash loses what is still in the buffer. Keep it that way: do not add a
+   flush per line.
 6. **Sound mixing** (`snd_sdl.c`, `snd_dma.c`, `snd_mix.c`):
    - `paint_audio` paints into a ring of 8192 frames, the way Quake uses a DMA
      buffer, and copies out whatever length SDL asks for. It used to assume
@@ -273,13 +275,31 @@ Rendering changes, none of which lowers quality:
    changes 2.5% of pixels, all on water surfaces (now perspective-correct);
    the status bar and other 2D are byte-identical.
 
-Together: demo1 30.87 G -> 30.02 G instructions.
+4. **`vid.numpages` is 1** (`gl_vidsdl.c`). NovaMesa's back buffer is copied
+   to the window, never flipped, so the status bar and tile border are redrawn
+   once after a change, not twice. This needed one companion fix:
+   `SCR_DrawConsole` (`gl_screen.c`) now invalidates the tile border after
+   drawing the console, as every other overlay does. It only did so before
+   drawing, which left a strip of console in the border once it closed, and
+   the second redraw had been hiding that. Verified by hashing every frame of
+   eight runs (about 8,200 frames: three demos, view sizes 70 to 110, console
+   opened and closed, menus, fps and clock overlays, `r_oldwater 0`): all
+   identical to `numpages = 2`. About 0.5%.
+5. **`Con_Printf` forces a screen refresh at most every 0.1 s**
+   (`CON_REFRESH_INTERVAL`, `console.c`). While not in a game it used to
+   redraw and swap the whole screen for every line printed: about ten times
+   during start-up, and a few hundred for `cvarlist` typed at the console. A
+   skipped line appears with the next refresh or the next normal frame.
+   Demo frames are unchanged.
+
+Together: demo1 30.87 G -> 30.02 G instructions (measured before 4 and 5).
+
+If something is drawn over the tile border or the status bar outside the 3D
+view, it must set `scr_tileclear_updates = 0` or call `Sbar_Changed ()` *after*
+drawing. With `numpages` at 1 there is no second redraw to cover for it.
 
 Still open, noticed while doing this:
 
-- `vid.numpages = 1` (`gl_vidsdl.c`). NovaMesa's back buffer is copied to the
-  window, never flipped, so the status bar and tile border only need
-  redrawing once after a change, not twice. About 0.5%. Not applied.
 - **NovaMesa**, `src/tnl/t_imm_fixup.c:477`: `is_fan_like[]` has `GL_POLYGON+1`
   entries and is indexed with `ctx->Driver.CurrentExecPrimitive`, which is
   `PRIM_OUTSIDE_BEGIN_END` (`GL_POLYGON+1`) outside `glBegin`. It reads one
@@ -296,9 +316,6 @@ Still open, noticed while doing this:
   steady frame rate. Print a few hundred consecutive `SDL_GetTicks()` values
   to find out. If so, use `timer.device` (`ReadEClock` or `GetSysTime`), which
   SDL already has open.
-- Stock behaviour, not a bug: every `Con_Printf` while not fully connected
-  calls `SCR_UpdateScreen`, so start-up and level loading draw and swap a full
-  frame per console line.
 
 ## Settings that trade appearance for speed
 
@@ -389,6 +406,7 @@ by the Amiga build.
     QUITFRAMES=150 PROFILE=1 ./run.sh "map e1m5\n+lookup"    # sky-heavy view
     DUMPEVERY=60 DUMPPREFIX=before ./run.sh "timedemo demo1" # PPM screenshots
     SOUND=1 AUDIODUMP=/tmp/a.raw ./run.sh "timedemo demo1"   # run the sound mixer too
+    FRAMEHASH=/tmp/a.txt ./run.sh "timedemo demo1"           # one hash per frame, to diff two builds
 
 - `sdl_stub.c` stands in for SDL and SDL_mixer and creates the NovaMesa
   context; `host_main.c` replaces `amiga_main.c` and `sys_file_amiga.c`;
@@ -402,11 +420,24 @@ by the Amiga build.
   can go in parallel.
 - Wall-clock differences under about 5% are lost in noise on a shared
   machine; use `PROFILE=1`. One profiled demo takes about five minutes.
-- Comparing screenshots between two builds: every console line printed during
-  start-up costs one buffer swap, so builds that print a different number of
-  lines are out of step by that many frames. `DUMPOFFSET=n` shifts the frame
-  numbering of one run to line them up. Frames with particles or explosions
-  can still differ, because `rand()` is called once per frame.
+- Comparing two builds frame by frame: `FRAMEHASH=file` writes a hash of the
+  back buffer for every frame, so `diff` on two such files checks a whole run
+  without storing screenshots. That is the test to use for anything that
+  touches 2D, the status bar or the tile border, where a sampled screenshot
+  easily misses the one stale frame. `__TIME__` and `__DATE__` are pinned in
+  `build.sh` because the engine prints them on the console.
+- Two builds only line up if they swap the same number of times before the
+  demo starts. Forced console refreshes during start-up are swaps
+  (`Con_Printf`; with `FAKECLOCK` the clock stands still during start-up, so
+  there are none). If the counts differ, `DUMPOFFSET=n` shifts one run's frame
+  numbering. Even then a few frames can differ: `rand()` is called once per
+  frame, which moves particles, and console notify lines expire on `realtime`,
+  which can round to a neighbouring frame.
+- Scripted input: put `wait` lines in the command string to let frames pass,
+  e.g. `"timedemo demo1\nwait\nwait\ntoggleconsole"`. Each `wait` is one
+  frame. Build long runs of them with `printf 'wait\\n%.0s' $(seq 60)`; a
+  plain `'wait\n'` loses its last newline in `$(...)` and glues onto the next
+  command.
 - With `SOUND=1 AUDIODUMP=file` the stub pretends the audio device opened and
   calls the engine's mixer callback from the frame loop, writing its 16-bit
   stereo output to the file. `AUDIOLEN=a,b,...` sets the block sizes asked for
