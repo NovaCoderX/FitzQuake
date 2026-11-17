@@ -789,17 +789,22 @@ void Host_Init (quakeparms_t *parms)
 		CL_Init ();
 	}
 
-	// Load the config file and set the registered CVARS.
-	Cbuf_InsertText ("exec quake.rc\n");
-
-	// NOVA_CODER
-	Cbuf_Execute ();
-
+	// NOVA: mark the hunk and finish initialising before quake.rc runs, as stock
+	// Quake does. It used to run first, which meant a "map" or "load" from the
+	// command line or autoexec.cfg was allocated below host_hunklevel and never
+	// freed, and config.cfg overwrote every cvar's default (Cvar_Set copies the
+	// value into default_string until host_initialized is set).
 	Hunk_AllocName (0, "-HOST_HUNKLEVEL-");
 	host_hunklevel = Hunk_LowMark ();
 
 	host_initialized = true;
 	Con_Printf ("========Quake Initialized=========\n");
+
+	// Load the config file and set the registered CVARS.
+	Cbuf_InsertText ("exec quake.rc\n");
+
+	// NOVA_CODER
+	Cbuf_Execute ();
 }
 
 /*

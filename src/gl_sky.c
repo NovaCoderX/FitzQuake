@@ -677,24 +677,30 @@ void Sky_GetTexCoord (vec3_t v, float speed, float *s, float *t)
 /*
 ===============
 Sky_DrawFaceQuad
+
+NOVA: only emits the four vertices now. This used to bind both textures,
+switch texture units, set the env mode and toggle blending for every quad,
+and there are several hundred of them in an open view; each of those state
+changes makes Mesa revalidate before the next primitive. The state is now set
+once per pass in Sky_DrawSkyLayers and all quads go into one glBegin/glEnd.
+The pixels drawn are the same.
 ===============
 */
+#define SKYPASS_BOTH	0	// both cloud layers at once, multitextured
+#define SKYPASS_SOLID	1	// back layer only
+#define SKYPASS_ALPHA	2	// front layer only
+
+static int sky_pass;
+
 void Sky_DrawFaceQuad (glpoly_t *p)
 {
 	float	s, t;
 	float	*v;
 	int		i;
 
-	if (gl_mtexable && r_skyalpha.value >= 1.0)
+	switch (sky_pass)
 	{
-		GL_DisableMultitexture(); // selects TEXTURE0
-		GL_Bind (solidskytexture);
-		GL_EnableMultitexture(); // selects TEXTURE1
-		GL_Bind (alphaskytexture);
-		glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
-		glEnable(GL_BLEND);
-
-		glBegin (GL_QUADS);
+	case SKYPASS_BOTH:
 		for (i=0, v=p->verts[0] ; i<4 ; i++, v+=VERTEXSIZE)
 		{
 			Sky_GetTexCoord (v, 8, &s, &t);
@@ -703,49 +709,30 @@ void Sky_DrawFaceQuad (glpoly_t *p)
 			GL_MTexCoord2fFunc (TEXTURE1, s, t);
 			glVertex3fv (v);
 		}
-		glEnd ();
-
-		glDisable(GL_BLEND);
-		GL_DisableMultitexture();
-
 		rs_skypolys++;
 		rs_skypasses++;
-	}
-	else
-	{
-		GL_Bind (solidskytexture);
+		break;
 
-		if (r_skyalpha.value < 1.0)
-			glColor3f (1, 1, 1);
-
-		glBegin (GL_QUADS);
+	case SKYPASS_SOLID:
 		for (i=0, v=p->verts[0] ; i<4 ; i++, v+=VERTEXSIZE)
 		{
 			Sky_GetTexCoord (v, 8, &s, &t);
 			glTexCoord2f (s, t);
 			glVertex3fv (v);
 		}
-		glEnd ();
+		rs_skypolys++;
+		rs_skypasses++;
+		break;
 
-		GL_Bind (alphaskytexture);
-		glEnable (GL_BLEND);
-
-		if (r_skyalpha.value < 1.0)
-			glColor4f (1, 1, 1, r_skyalpha.value);
-
-		glBegin (GL_QUADS);
+	default: // SKYPASS_ALPHA
 		for (i=0, v=p->verts[0] ; i<4 ; i++, v+=VERTEXSIZE)
 		{
 			Sky_GetTexCoord (v, 16, &s, &t);
 			glTexCoord2f (s, t);
 			glVertex3fv (v);
 		}
-		glEnd ();
-
-		glDisable (GL_BLEND);
-
-		rs_skypolys++;
-		rs_skypasses += 2;
+		rs_skypasses++;
+		break;
 	}
 }
 
@@ -809,6 +796,65 @@ void Sky_DrawFace (int axis)
 
 /*
 ==============
+Sky_DrawSkyLayers -- NOVA
+
+Draws the two scrolling cloud layers on every sky box face that is in view.
+All GL state is set here, once per pass; see Sky_DrawFaceQuad.
+==============
+*/
+static void Sky_DrawSkyFaces (int pass)
+{
+	int		i;
+
+	sky_pass = pass;
+
+	glBegin (GL_QUADS);
+	for (i=0 ; i<6 ; i++)
+		if (skymins[0][i] < skymaxs[0][i] && skymins[1][i] < skymaxs[1][i])
+			Sky_DrawFace (i);
+	glEnd ();
+}
+
+static void Sky_DrawSkyLayers (void)
+{
+	if (gl_mtexable && r_skyalpha.value >= 1.0)
+	{
+		GL_DisableMultitexture(); // selects TEXTURE0
+		GL_Bind (solidskytexture);
+		GL_EnableMultitexture(); // selects TEXTURE1
+		GL_Bind (alphaskytexture);
+		glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
+
+		//NOVA -- GL_BLEND used to be enabled here. With GL_DECAL the fragment
+		//        keeps the alpha of the solid layer, which is 1, so the blend
+		//        changed nothing and only cost a pass over the pixels.
+		Sky_DrawSkyFaces (SKYPASS_BOTH);
+
+		GL_DisableMultitexture();
+	}
+	else
+	{
+		GL_Bind (solidskytexture);
+
+		if (r_skyalpha.value < 1.0)
+			glColor3f (1, 1, 1);
+
+		Sky_DrawSkyFaces (SKYPASS_SOLID);
+
+		GL_Bind (alphaskytexture);
+		glEnable (GL_BLEND);
+
+		if (r_skyalpha.value < 1.0)
+			glColor4f (1, 1, 1, r_skyalpha.value);
+
+		Sky_DrawSkyFaces (SKYPASS_ALPHA);
+
+		glDisable (GL_BLEND);
+	}
+}
+
+/*
+==============
 Sky_DrawSky
 
 called once per frame before drawing anything else
@@ -857,9 +903,7 @@ void Sky_DrawSky (void)
 			if (r_skyalpha.value < 1.0)
 				glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
-			for (i=0 ; i<6 ; i++)
-				if (skymins[0][i] < skymaxs[0][i] && skymins[1][i] < skymaxs[1][i])
-					Sky_DrawFace (i);
+			Sky_DrawSkyLayers (); //NOVA -- state set once, not per quad
 
 			if (r_skyalpha.value < 1.0)
 				glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);

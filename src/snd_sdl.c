@@ -25,11 +25,24 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define MIX_NUM_CHANNELS 2
 #define MIX_BUFFER_SIZE 1024
 
+// NOVA: size of the ring Quake paints into, in sample frames. Must be a power
+// of two, and at least as long as the largest block SDL asks for in one go.
+#define SFX_RING_FRAMES 8192
+
 static dma_t the_shm;
 
 // We need a local buffer because SDL_mixer's stream is transient
 // and we need to mix Quake's SFX into it.
-static Uint8 *sfx_mixing_buffer = NULL;
+//
+// NOVA: this is now a ring, used the way Quake uses a DMA buffer:
+// S_PaintChannels() writes sample frame N at offset (N & (SFX_RING_FRAMES-1)).
+// It used to be a linear buffer of exactly MIX_BUFFER_SIZE frames, which only
+// worked while every callback asked for exactly that many and paintedtime
+// stayed a multiple of it; any other length overran it. It is also allocated
+// before the callback is installed, so shm->buffer is never NULL.
+static Uint8 *sfx_ring = NULL;
+static int sfx_ring_bytes = 0;
+static int sfx_frame_bytes = 0;		// bytes per sample frame
 
 /*
 ================
@@ -38,26 +51,64 @@ paint_audio
 This is called by SDL_mixer after it has processed the music.
 We paint Quake's SFX into our local buffer, then mix it into the
 final output stream.
+
+It runs in SDL's audio task, with SDL's audio lock held.
 ================
 */
 static void paint_audio(void *unused, Uint8 *stream, int len)
 {
-    if (shm && sfx_mixing_buffer) {
-        // Clear the temporary buffer so we don't have old sounds looping
-        Q_memset(sfx_mixing_buffer, 0, len);
-        
-        // Point Quake's sound buffer to our temporary mixing buffer
-        shm->buffer = sfx_mixing_buffer;
+    if (shm && sfx_ring) {
+        int frames = len / sfx_frame_bytes;
+        int start = shm->samplepos;
+        int offset, first;
+
+        if (frames > SFX_RING_FRAMES) {
+            frames = SFX_RING_FRAMES;
+        }
 
         // Update the sample position based on how much SDL requested
-        shm->samplepos += len / (shm->samplebits / 8) / shm->channels;
+        shm->samplepos = start + frames;
 
-        // Tell Quake to paint its SFX into shm->buffer
+        // Tell Quake to paint its SFX into the ring, up to the new position
         S_PaintChannels(shm->samplepos);
 
-        // Mix Quake's finished SFX buffer into the SDL_mixer stream (which contains music)
+        // Mix Quake's finished SFX into the SDL_mixer stream (which contains music),
+        // in two pieces if this block wraps around the end of the ring.
         // SDL_MIX_MAXVOLUME allows Quake's internal volume sliders to stay in control
-        SDL_MixAudio(stream, sfx_mixing_buffer, len, SDL_MIX_MAXVOLUME);
+        offset = (start & (SFX_RING_FRAMES - 1)) * sfx_frame_bytes;
+        len = frames * sfx_frame_bytes;
+        first = sfx_ring_bytes - offset;
+        if (first > len) {
+            first = len;
+        }
+
+        SDL_MixAudio(stream, sfx_ring + offset, first, SDL_MIX_MAXVOLUME);
+        if (len > first) {
+            SDL_MixAudio(stream + first, sfx_ring, len - first, SDL_MIX_MAXVOLUME);
+        }
+    }
+}
+
+/*
+================
+SNDDMA_Lock / SNDDMA_Unlock -- NOVA
+
+paint_audio() runs in SDL's audio task and reads channels[] while the game
+changes it. These keep the mixer out while a channel is being set up or torn
+down. Never hold the lock across anything slow (file access in particular).
+================
+*/
+void SNDDMA_Lock(void)
+{
+    if (sfx_ring) {
+        SDL_LockAudio();
+    }
+}
+
+void SNDDMA_Unlock(void)
+{
+    if (sfx_ring) {
+        SDL_UnlockAudio();
     }
 }
 
@@ -95,13 +146,20 @@ int SNDDMA_Init(void)
     shm->samplebits = (actual_format & 0xFF);
     shm->speed = actual_rate;
     shm->channels = actual_channels;
-    shm->samples = MIX_BUFFER_SIZE * shm->channels;
+    shm->samples = SFX_RING_FRAMES * shm->channels;
     shm->samplepos = 0;
     shm->submission_chunk = 1;
 
-    // Allocate the intermediate buffer Quake will paint into
-    sfx_mixing_buffer = (Uint8 *)malloc(MIX_BUFFER_SIZE * (shm->samplebits / 8) * shm->channels);
-    shm->buffer = NULL; // This is set per-frame in the callback
+    // Allocate the ring Quake will paint into (NOVA: see the comment at the top)
+    sfx_frame_bytes = (shm->samplebits / 8) * shm->channels;
+    sfx_ring_bytes = SFX_RING_FRAMES * sfx_frame_bytes;
+    sfx_ring = (Uint8 *)calloc(1, sfx_ring_bytes);
+    if (!sfx_ring) {
+    	Con_Printf("Could not allocate the sound mixing buffer\n");
+    	Mix_CloseAudio();
+    	return 0;
+    }
+    shm->buffer = sfx_ring;
 
     // Set the PostMix callback, this hooks our SFX engine into the SDL_mixer output pipeline
     Mix_SetPostMix(paint_audio, NULL);
@@ -118,10 +176,15 @@ void SNDDMA_Shutdown(void)
 {
 	Mix_SetPostMix(NULL, NULL); // Remove the callback
 
-	// Free the music.
-	if (sfx_mixing_buffer) {
-		free(sfx_mixing_buffer);
-		sfx_mixing_buffer = NULL;
+	// Free the mixing buffer. The callback is gone, so nothing is using it.
+	if (sfx_ring) {
+		Uint8 *ring = sfx_ring;
+
+		sfx_ring = NULL;
+		if (shm) {
+			shm->buffer = NULL;
+		}
+		free(ring);
 	}
 
 	Mix_CloseAudio();

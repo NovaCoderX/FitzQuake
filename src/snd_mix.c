@@ -158,8 +158,13 @@ CHANNEL MIXING
 ===============================================================================
 */
 
-void SND_PaintChannelFrom8 (channel_t *ch, sfxcache_t *sc, int endtime);
-void SND_PaintChannelFrom16 (channel_t *ch, sfxcache_t *sc, int endtime);
+//NOVA -- both take the position in paintbuffer to start at. They always
+//        started at 0, so when a looping sound wrapped part of the way through
+//        a block, the samples after the loop point were added on top of the
+//        start of the block instead of following on (an old id bug; it is the
+//        click at the loop point of ambient sounds).
+void SND_PaintChannelFrom8 (channel_t *ch, sfxcache_t *sc, int count, int paintbufferstart);
+void SND_PaintChannelFrom16 (channel_t *ch, sfxcache_t *sc, int count, int paintbufferstart);
 
 void S_PaintChannels(int endtime)
 {
@@ -187,7 +192,10 @@ void S_PaintChannels(int endtime)
 				continue;
 			if (!ch->leftvol && !ch->rightvol)
 				continue;
-			sc = S_LoadSound (ch->sfx);
+			//NOVA -- was S_LoadSound(). This runs in SDL's audio task, so it
+			//        must not relink the cache or load from disk; S_Update
+			//        does both for every active channel in the main task.
+			sc = (sfxcache_t *) ch->sfx->cache.data;
 			if (!sc)
 				continue;
 
@@ -203,9 +211,9 @@ void S_PaintChannels(int endtime)
 				if (count > 0)
 				{
 					if (sc->width == 1)
-						SND_PaintChannelFrom8(ch, sc, count);
+						SND_PaintChannelFrom8(ch, sc, count, ltime - paintedtime);
 					else
-						SND_PaintChannelFrom16(ch, sc, count);
+						SND_PaintChannelFrom16(ch, sc, count, ltime - paintedtime);
 
 					ltime += count;
 				}
@@ -244,12 +252,13 @@ void SND_InitScaletable (void)
 }
 
 
-void SND_PaintChannelFrom8 (channel_t *ch, sfxcache_t *sc, int count)
+void SND_PaintChannelFrom8 (channel_t *ch, sfxcache_t *sc, int count, int paintbufferstart)
 {
 	int 	data;
 	int		*lscale, *rscale;
 	unsigned char *sfx;
 	int		i;
+	portable_samplepair_t	*out = paintbuffer + paintbufferstart; //NOVA
 
 	if (ch->leftvol > 255)
 		ch->leftvol = 255;
@@ -263,20 +272,21 @@ void SND_PaintChannelFrom8 (channel_t *ch, sfxcache_t *sc, int count)
 	for (i=0 ; i<count ; i++)
 	{
 		data = sfx[i];
-		paintbuffer[i].left += lscale[data];
-		paintbuffer[i].right += rscale[data];
+		out[i].left += lscale[data];
+		out[i].right += rscale[data];
 	}
 
 	ch->pos += count;
 }
 
-void SND_PaintChannelFrom16 (channel_t *ch, sfxcache_t *sc, int count)
+void SND_PaintChannelFrom16 (channel_t *ch, sfxcache_t *sc, int count, int paintbufferstart)
 {
 	int data;
 	int left, right;
 	int leftvol, rightvol;
 	signed short *sfx;
 	int	i;
+	portable_samplepair_t	*out = paintbuffer + paintbufferstart; //NOVA
 
 	leftvol = ch->leftvol;
 	rightvol = ch->rightvol;
@@ -287,8 +297,8 @@ void SND_PaintChannelFrom16 (channel_t *ch, sfxcache_t *sc, int count)
 		data = sfx[i];
 		left = (data * leftvol) >> 8;
 		right = (data * rightvol) >> 8;
-		paintbuffer[i].left += left;
-		paintbuffer[i].right += right;
+		out[i].left += left;
+		out[i].right += right;
 	}
 
 	ch->pos += count;

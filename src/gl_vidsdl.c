@@ -611,7 +611,12 @@ void GL_SetupState (void)
 	glPolygonMode (GL_FRONT_AND_BACK, GL_FILL);
 	glShadeModel (GL_FLAT);
 
-	glHint (GL_PERSPECTIVE_CORRECTION_HINT, GL_FASTEST);
+	// NOVA: was GL_FASTEST. Nova-Mesa's perspective path already drops to its
+	// affine loop for any triangle where that is within half a pixel, so the
+	// hint bought nothing measurable (+0.2% with GL_NICEST) and cost visible
+	// warping on water, sprites and other large non-mipmapped polygons. It
+	// also matches what R_DrawAliasModel restores after gl_affinemodels.
+	glHint (GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
 
 	glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glTexEnvf (GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);

@@ -33,8 +33,10 @@ void Sys_Printf(char *message, ...)
 	char text[MAX_MESSAGE_SIZE];
 
     if (logfile_active.value) {
+        // NOVA: bounded. Con_Printf passes messages of up to 4096 bytes and
+        // this buffer is 2048; "gl_info" alone comes to about 2000.
         va_start (argptr, message);
-        vsprintf (text, message, argptr);
+        vsnprintf (text, sizeof(text), message, argptr);
         va_end (argptr);
     
         if (!logfile) {
@@ -57,7 +59,7 @@ void Sys_Error(char *message, ...)
 	FILE *errorLogfile;
     
     va_start (argptr, message);
-    vsprintf (text, message, argptr);
+    vsnprintf (text, sizeof(text), message, argptr); // NOVA: bounded
     va_end (argptr);
 
     errorLogfile = fopen("q_error.txt", "w");

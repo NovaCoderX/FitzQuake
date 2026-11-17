@@ -1036,6 +1036,10 @@ void COM_CheckRegistered (void)
 	COM_OpenFile("gfx/pop.lmp", &h);
 	static_registered = 0;
 
+	// NOVA: was only set on the registered path below, so with shareware data
+	// "stuffcmds" had nothing to read and every +command was ignored.
+	Cvar_Set ("cmdline", com_cmdline);
+
 	if (h == -1)
 	{
 #if WINDED
@@ -1054,7 +1058,6 @@ void COM_CheckRegistered (void)
 		if (pop[i] != (unsigned short)BigShort (check[i]))
 			Sys_Error ("Corrupted data file.");
 
-	Cvar_Set ("cmdline", com_cmdline); //johnfitz -- eliminate leading space
 	Cvar_Set ("registered", "1");
 	static_registered = 1;
 	Con_Printf ("Playing registered version.\n");
