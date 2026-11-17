@@ -87,6 +87,7 @@ void R_MarkSurfaces (void)
 		return;
 	}
 
+	vis_changed = false; //NOVA -- was never cleared, so one change of r_novis or r_oldskyleaf rebuilt the chains every frame from then on
 	r_visframecount++;
 	r_oldviewleaf = r_viewleaf;
 
