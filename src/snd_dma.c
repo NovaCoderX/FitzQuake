@@ -159,6 +159,23 @@ S_Init
 */
 void S_Init (void)
 {
+	// NOVA: register the cvars even with -nosound. They used to be skipped,
+	// so default.cfg and config.cfg complained about "volume" and friends, and
+	// because only registered cvars are written back, one -nosound run lost
+	// the saved volume, bgmvolume and sndspeed from config.cfg.
+	Cvar_RegisterVariable(&nosound);
+	Cvar_RegisterVariable(&volume);
+	Cvar_RegisterVariable(&precache);
+	Cvar_RegisterVariable(&loadas8bit);
+	Cvar_RegisterVariable(&bgmvolume);
+	Cvar_RegisterVariable(&bgmbuffer);
+	Cvar_RegisterVariable(&ambient_level);
+	Cvar_RegisterVariable(&ambient_fade);
+	Cvar_RegisterVariable(&snd_noextraupdate);
+	Cvar_RegisterVariable(&snd_show);
+	Cvar_RegisterVariable(&snd_mixahead);
+    Cvar_RegisterVariable(&sndspeed);
+
 	if (COM_CheckParm("-nosound")) {
 		return;
     }
@@ -174,19 +191,6 @@ void S_Init (void)
 	Cmd_AddCommand("stopsound", S_StopAllSoundsC);
 	Cmd_AddCommand("soundlist", S_SoundList);
 	Cmd_AddCommand("soundinfo", S_SoundInfo_f);
-
-	Cvar_RegisterVariable(&nosound);
-	Cvar_RegisterVariable(&volume);
-	Cvar_RegisterVariable(&precache);
-	Cvar_RegisterVariable(&loadas8bit);
-	Cvar_RegisterVariable(&bgmvolume);
-	Cvar_RegisterVariable(&bgmbuffer);
-	Cvar_RegisterVariable(&ambient_level);
-	Cvar_RegisterVariable(&ambient_fade);
-	Cvar_RegisterVariable(&snd_noextraupdate);
-	Cvar_RegisterVariable(&snd_show);
-	Cvar_RegisterVariable(&snd_mixahead);
-    Cvar_RegisterVariable(&sndspeed);
 
     if (COM_CheckParm("-sndspeed"))
     {
@@ -439,10 +443,19 @@ void S_StartSound(int entnum, int entchannel, sfx_t *sfx, vec3_t origin, float f
 
 	vol = fvol*255;
 
+	//NOVA -- the mixer runs in SDL's audio task, so it is locked out while the
+	//        channel is rebuilt. The lock is dropped around S_LoadSound, which
+	//        may read from disk; the channel has no sfx then, so the mixer
+	//        skips it.
+	SNDDMA_Lock ();
+
 // pick a channel to play on
 	target_chan = SND_PickChannel(entnum, entchannel);
 	if (!target_chan)
+	{
+		SNDDMA_Unlock ();
 		return;
+	}
 
 // spatialize
 	memset (target_chan, 0, sizeof(*target_chan));
@@ -452,6 +465,8 @@ void S_StartSound(int entnum, int entchannel, sfx_t *sfx, vec3_t origin, float f
 	target_chan->entnum = entnum;
 	target_chan->entchannel = entchannel;
 	SND_Spatialize(target_chan);
+
+	SNDDMA_Unlock ();
 
 	if (!target_chan->leftvol && !target_chan->rightvol)
 		return;		// not audible at all
@@ -463,6 +478,8 @@ void S_StartSound(int entnum, int entchannel, sfx_t *sfx, vec3_t origin, float f
 		target_chan->sfx = NULL;
 		return;		// couldn't load the sound's data
 	}
+
+	SNDDMA_Lock ();
 
 	target_chan->sfx = sfx;
 	target_chan->pos = 0.0;
@@ -486,11 +503,15 @@ void S_StartSound(int entnum, int entchannel, sfx_t *sfx, vec3_t origin, float f
 		}
 
 	}
+
+	SNDDMA_Unlock ();
 }
 
 void S_StopSound(int entnum, int entchannel)
 {
 	int i;
+
+	SNDDMA_Lock (); //NOVA
 
 	for (i=0 ; i<MAX_DYNAMIC_CHANNELS ; i++)
 	{
@@ -499,9 +520,11 @@ void S_StopSound(int entnum, int entchannel)
 		{
 			channels[i].end = 0;
 			channels[i].sfx = NULL;
-			return;
+			break;
 		}
 	}
+
+	SNDDMA_Unlock ();
 }
 
 void S_StopAllSounds(qboolean clear)
@@ -511,6 +534,8 @@ void S_StopAllSounds(qboolean clear)
 	if (!snd_initialized)
 		return;
 
+	SNDDMA_Lock (); //NOVA
+
 	total_channels = MAX_DYNAMIC_CHANNELS + NUM_AMBIENTS;	// no statics
 
 	for (i=0 ; i<MAX_CHANNELS ; i++)
@@ -518,6 +543,8 @@ void S_StopAllSounds(qboolean clear)
 			channels[i].sfx = NULL;
 
 	Q_memset(channels, 0, MAX_CHANNELS * sizeof(channel_t));
+
+	SNDDMA_Unlock ();
 
 	if (clear)
 		S_ClearBuffer ();
@@ -540,7 +567,9 @@ void S_ClearBuffer (void)
 	else
 		clear = 0;
 
+	SNDDMA_Lock (); //NOVA
 	Q_memset(shm->buffer, clear, shm->samples * shm->samplebits/8);
+	SNDDMA_Unlock ();
 }
 
 
@@ -576,6 +605,8 @@ void S_StaticSound (sfx_t *sfx, vec3_t origin, float vol, float attenuation)
 		return;
 	}
 
+	SNDDMA_Lock (); //NOVA
+
 	ss->sfx = sfx;
 	VectorCopy (origin, ss->origin);
 	ss->master_vol = vol;
@@ -583,6 +614,8 @@ void S_StaticSound (sfx_t *sfx, vec3_t origin, float vol, float attenuation)
     ss->end = paintedtime + sc->length;
 
 	SND_Spatialize (ss);
+
+	SNDDMA_Unlock ();
 }
 
 
@@ -665,6 +698,26 @@ void S_Update(vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 	VectorCopy(right, listener_right);
 	VectorCopy(up, listener_up);
 
+	//NOVA -- keep the sounds in use at the head of the cache, and reload any
+	//        that were flushed. The mixer used to do this for itself through
+	//        S_LoadSound, but it runs in SDL's audio task, and Cache_Check
+	//        relinks the cache's LRU list while the main task may be relinking
+	//        it too (drawing an alias model does). S_PaintChannels now only
+	//        reads the cache pointer.
+	ch = channels;
+	for (i=0 ; i<total_channels; i++, ch++)
+	{
+		sfx_t	*sfx = ch->sfx;		// the mixer can clear ch->sfx at any time
+
+		if (sfx)
+			S_LoadSound (sfx);
+	}
+
+	//NOVA -- the volumes below are changed in several steps (static sounds
+	//        are zeroed and summed into one channel), so keep the mixer out
+	//        until they are consistent again.
+	SNDDMA_Lock ();
+
 // update general area ambient sound sources
 	S_UpdateAmbientSounds ();
 
@@ -717,6 +770,8 @@ void S_Update(vec3_t origin, vec3_t forward, vec3_t right, vec3_t up)
 
 
 	}
+
+	SNDDMA_Unlock ();
 
 //
 // debugging output
@@ -787,6 +842,15 @@ void S_Update_(void)
 	int				samps;
 
 	if (!snd_initialized || (snd_blocked > 0))
+		return;
+
+	//NOVA -- with the SDL backend all mixing is done by paint_audio(), in SDL's
+	//        audio task (snd_sdl.c). This function used to mix as well, from
+	//        the main task into the same buffers, until its idea of the time
+	//        (which runs at half speed, because samplepos counts frames and
+	//        GetSoundtime divides by the channel count) fell behind for good
+	//        about 2000 samples after start-up. Only -simsound still needs it.
+	if (!fakedma)
 		return;
 
 // Updates DMA time

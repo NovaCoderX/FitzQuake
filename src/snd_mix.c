@@ -187,7 +187,10 @@ void S_PaintChannels(int endtime)
 				continue;
 			if (!ch->leftvol && !ch->rightvol)
 				continue;
-			sc = S_LoadSound (ch->sfx);
+			//NOVA -- was S_LoadSound(). This runs in SDL's audio task, so it
+			//        must not relink the cache or load from disk; S_Update
+			//        does both for every active channel in the main task.
+			sc = (sfxcache_t *) ch->sfx->cache.data;
 			if (!sc)
 				continue;
 

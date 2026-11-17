@@ -124,6 +124,11 @@ int SNDDMA_GetDMAPos(void);
 // shutdown the DMA xfer.
 void SNDDMA_Shutdown(void);
 
+// NOVA: keep the mixer (which runs in SDL's audio task) out while channels[]
+// is being changed. Do not hold across file access.
+void SNDDMA_Lock(void);
+void SNDDMA_Unlock(void);
+
 // ====================================================================
 // User-setable variables
 // ====================================================================
