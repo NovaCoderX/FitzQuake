@@ -9,7 +9,17 @@
 //   QUITFRAMES=n    exit after n buffer swaps (for "map xxx" runs)
 //   DUMPEVERY=n     write a PPM of the back buffer every n swaps
 //   DUMPPREFIX=p    file name prefix for those PPMs (default "shot")
+//   DUMPOFFSET=n    added to the frame number for DUMPEVERY and the file name.
+//                   Every console line printed during start-up costs one swap,
+//                   so two builds that print a different number of lines are
+//                   out of step by that many frames; this lines them up again
 //   ECHO=1          copy console output to stdout
+//   AUDIODUMP=file  pretend audio opened (run without -nosound: SOUND=1 with
+//                   run.sh), call the engine's mixer callback once per frame
+//                   and write the raw 16-bit stereo result to the file
+//   AUDIOLEN=a,b,.. sizes in bytes of the blocks asked for each frame, one
+//                   callback per entry (default 4096). Any split of the same
+//                   total must give the same output
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -65,13 +75,42 @@ static void dump(const char *name)
 	fclose(f);
 }
 
+// Simulated audio device. The callback is run from the frame loop, not from
+// another thread, so a run is repeatable and two builds can be compared byte
+// for byte. It also checks that the engine never leaves the audio lock held.
+static void (*postmix)(void *, Uint8 *, int);
+static FILE *audio_file;
+static int audio_rate, audio_lock_depth;
+
+static void run_audio(void)
+{
+	static Uint8 stream[65536];
+	const char *list = getenv("AUDIOLEN") ? getenv("AUDIOLEN") : "4096";
+	if (!postmix || !audio_file) return;
+	if (audio_lock_depth) { printf("ERROR: audio lock held across a frame (depth %d)\n", audio_lock_depth); exit(1); }
+	while (*list) {		// one callback per entry in the comma-separated list
+		int len = atoi(list);
+		if (len > (int)sizeof stream) len = sizeof stream;
+		memset(stream, 0, len);
+		postmix(NULL, stream, len);
+		fwrite(stream, 1, len, audio_file);
+		while (*list && *list != ',') list++;
+		if (*list == ',') list++;
+	}
+}
+
+void SDL_LockAudio(void){ audio_lock_depth++; }
+void SDL_UnlockAudio(void){ if (--audio_lock_depth < 0) { printf("ERROR: audio unlocked more often than locked\n"); exit(1); } }
+
 void SDL_GL_SwapBuffers(void)
 {
 	const char *d = getenv("DUMPEVERY");
+	int dumpoffset = getenv("DUMPOFFSET") ? atoi(getenv("DUMPOFFSET")) : 0;
 	frameno++; fake_ms += fake_step;
-	if (d && frameno % atoi(d) == 0) {
+	run_audio();
+	if (d && (frameno + dumpoffset) % atoi(d) == 0) {
 		char nm[256];
-		snprintf(nm, sizeof nm, "%s_%05d.ppm", getenv("DUMPPREFIX") ? getenv("DUMPPREFIX") : "shot", frameno);
+		snprintf(nm, sizeof nm, "%s_%05d.ppm", getenv("DUMPPREFIX") ? getenv("DUMPPREFIX") : "shot", frameno + dumpoffset);
 		glFinish(); dump(nm);
 	}
 	amesa_swap_buffers(actx);
@@ -83,13 +122,25 @@ const SDL_VideoInfo *SDL_GetVideoInfo(void){ static SDL_VideoInfo vi = {640,480}
 void SDL_WM_SetCaption(const char *a, const char *b){}
 SDL_GrabMode SDL_WM_GrabInput(SDL_GrabMode m){ return SDL_GRAB_OFF; }
 int SDL_ShowCursor(int t){ return 0; }
-void SDL_MixAudio(Uint8 *d, const Uint8 *s, Uint32 l, int v){}
+void SDL_MixAudio(Uint8 *d, const Uint8 *s, Uint32 l, int v)
+{
+	// native-endian signed 16-bit, full volume, saturating
+	short *dp = (short *)d; const short *sp = (const short *)s; Uint32 i;
+	for (i = 0; i < l/2; i++) { int x = dp[i] + sp[i]; dp[i] = x > 32767 ? 32767 : x < -32768 ? -32768 : x; }
+}
 
-// run with -nosound -nocdaudio; these only need to link
-int Mix_OpenAudio(int a, Uint16 b, int c, int d){ return -1; }
-int Mix_QuerySpec(int *a, Uint16 *b, int *c){ return 0; }
-void Mix_CloseAudio(void){}
-void Mix_SetPostMix(void (*f)(void *, Uint8 *, int), void *a){}
+// Normally run with -nosound -nocdaudio, and these only need to link.
+// With AUDIODUMP set the device "opens" and run_audio() drives the mixer.
+int Mix_OpenAudio(int rate, Uint16 fmt, int ch, int chunk)
+{
+	if (!getenv("AUDIODUMP")) return -1;
+	audio_file = fopen(getenv("AUDIODUMP"), "wb");
+	audio_rate = rate;
+	return audio_file ? 0 : -1;
+}
+int Mix_QuerySpec(int *rate, Uint16 *fmt, int *ch){ if (!audio_file) return 0; *rate = audio_rate; *fmt = MIX_DEFAULT_FORMAT; *ch = 2; return 1; }
+void Mix_CloseAudio(void){ if (audio_file) { fclose(audio_file); audio_file = NULL; } }
+void Mix_SetPostMix(void (*f)(void *, Uint8 *, int), void *a){ postmix = f; }
 char *Mix_GetError(void){ return "stub"; }
 Mix_Music *Mix_LoadMUS(const char *n){ return NULL; }
 int Mix_PlayMusic(Mix_Music *m, int l){ return -1; }

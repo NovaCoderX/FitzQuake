@@ -52,4 +52,5 @@ int SDL_GL_SetAttribute(SDL_GLattr, int); SDL_Surface *SDL_SetVideoMode(int, int
 SDL_Rect **SDL_ListModes(SDL_PixelFormat *, Uint32); const SDL_VideoInfo *SDL_GetVideoInfo(void);
 void SDL_WM_SetCaption(const char *, const char *); SDL_GrabMode SDL_WM_GrabInput(SDL_GrabMode); int SDL_ShowCursor(int);
 void SDL_MixAudio(Uint8 *, const Uint8 *, Uint32, int);
+void SDL_LockAudio(void); void SDL_UnlockAudio(void);
 #endif

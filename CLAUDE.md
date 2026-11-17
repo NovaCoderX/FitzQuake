@@ -23,11 +23,15 @@ confirmed for this project.
 
 - Changes are marked with a `NOVA:` (or `//NOVA --`) comment saying why. Older
   port changes are marked `NOVA_CODER`.
-- Line endings are mixed: about half the files in `src/` are CRLF
-  (`host.c`, `common.c`, `gl_rmain.c`, `gl_draw.c`, ...), the rest LF
-  (`r_world.c`, `r_brush.c`, `r_alias.c`, `gl_vidsdl.c`, ...). Preserve what a
-  file uses. Editing a CRLF file with a script that reads in text mode will
-  silently convert it.
+- Line endings are mixed. Most of `src/` is CRLF (`host.c`, `common.c`,
+  `gl_rmain.c`, `r_world.c`, `gl_draw.c`, `sys_sdl.c`, nearly all headers,
+  ...). These are LF: `amiga_main.c cd_sdl.c cl_parse.c console.c gl_mesh.c
+  gl_model.c gl_refrag.c gl_rmisc.c gl_screen.c gl_sky.c gl_texmgr.c
+  gl_vidsdl.c r_alias.c r_brush.c r_part.c sbar.c snd_dma.c snd_mix.c
+  snd_sdl.c view.c gl_warp_sin.h glquake.h quakedef.h render.h sound.h`.
+  Preserve what a file uses: check with `grep -c $'\r' file` before editing,
+  and edit CRLF files in binary mode. A script that reads in text mode
+  converts the whole file silently.
 - The code assumes 32-bit pointers (pointers are stored in `int`/`unsigned`
   in the texture manager and the QuakeC VM). Byte order is detected at run
   time in `COM_Init`, so the same source runs on little-endian hosts.
@@ -63,9 +67,10 @@ Renderer:
   bar, view blends (`V_PolyBlend`).
 
 Settings this port changes from stock FitzQuake: `gl_texturemode` defaults to
-`GL_NEAREST_MIPMAP_NEAREST`, `r_oldwater 1`, `gl_subdivide_size 256`,
-`gl_flashblend 1`, perspective hint `GL_FASTEST`, default mode 320x240, the
-72 fps cap is removed, `sndspeed 22050`.
+`GL_NEAREST_MIPMAP_NEAREST`, `r_oldwater 1`, `gl_subdivide_size 256`, default
+mode 320x240, the 72 fps cap is removed, `sndspeed 22050`. (`gl_flashblend 1`
+and the `GL_FASTEST` hint used to be on this list; both are back to stock,
+see "Changes applied".)
 
 ## Which NovaMesa path each pass uses (default settings)
 
@@ -73,14 +78,20 @@ Settings this port changes from stock FitzQuake: `gl_texturemode` defaults to
 |---|---|---|
 | World, brush entities | unit 0 REPLACE (RGB, mipmapped nearest) + unit 1 lightmap (RGB, LINEAR), COMBINE modulate x2 | `dualtex_triangle` — integer fast path |
 | Sky, flat pre-pass | untextured, flat | driver direct fill |
-| Sky, cloud layers | unit 0 REPLACE + unit 1 DECAL (RGBA), blend on, depth GEQUAL | `multitextured_triangle` — general float path |
+| Sky, cloud layers | unit 0 REPLACE + unit 1 DECAL (RGBA), depth GEQUAL | `multitextured_triangle` — general float path |
 | Alias model, no fullbright pixels | one texture, COMBINE modulate x2 | `general_textured_triangle` — general float path |
 | Alias model with fullbright mask | unit 0 COMBINE x2 + unit 1 DECAL, blend on | `multitextured_triangle` — general float path |
 | World fullbright ("glow") pass | one RGBA texture, blend | `persp_textured_triangle` + one-pass blend |
-| Water (`r_oldwater 1`), particles, sprites, 2D | one texture, not mipmapped | `affine_textured_triangle` |
-| View blend (`V_PolyBlend`), dlight blobs | untextured, blend | `flat_rgba_triangle` / `smooth_rgba_triangle` through the generic span code |
+| Water (`r_oldwater 1`), particles, sprites, 2D | one texture, not mipmapped | `persp_textured_triangle`, which uses its affine loop wherever that is within half a pixel (all 2D) |
+| View blend (`V_PolyBlend`); dlight blobs with `gl_flashblend 1` | untextured, blend | `flat_rgba_triangle` / `smooth_rgba_triangle` through the generic span code |
 
 ## Where the time goes (measured)
+
+These measurements were taken on commit `fc9432e`, before the fixes listed
+under "Changes applied"; the defaults then were `gl_flashblend 1` and
+`GL_FASTEST`. With the changes, demo1 is 30.02 G instructions (-2.8%) and the
+sky-heavy view below renders 4.2% cheaper. The proportions are otherwise
+unchanged.
 
 Method: the engine built for the host as a 32-bit program against NovaMesa,
 with a stub SDL (`test/hostbench/`, below), `timedemo` on the shareware demos
@@ -175,122 +186,131 @@ A sky pixel currently costs about 2.6 times what a world pixel costs.
    are about half of the whole frame (`r_fullbright 1` is 48% cheaper).
 3. **Overdraw is already low**, so re-ordering the world front to back is not
    worth doing (see "Measured and not worth doing").
-4. What is left on the FitzQuake side adds up to a few percent, plus knobs that
-   trade appearance for speed. The larger remaining gains are in NovaMesa and
-   are listed separately below, with numbers.
+4. What there was on the FitzQuake side added up to a few percent and has been
+   applied (below). Beyond that there are only knobs that trade appearance for
+   speed. The larger remaining gains are in NovaMesa and are listed separately,
+   with numbers.
 
-## Bugs found
+## Changes applied
 
-None of these explain the frame rate. In rough order of how likely they are to
-bite:
+All of these are in the tree, marked `NOVA`. "Verified" means checked with the
+host harness: screenshots every 60 frames of demo1 and every 100 of demo2,
+and three sky configurations, compared against the build before the change.
 
-1. **`+map`, `+timedemo` and other `+commands` are ignored with shareware data.**
-   `common.c:1057`: `Cvar_Set ("cmdline", com_cmdline)` is only reached in the
-   registered branch of `COM_CheckRegistered`; the shareware branch returns at
-   line 1047 first. `stuffcmds` reads that cvar. Fix: set it before the
-   `h == -1` test.
-2. **The first map loaded from the command line or `autoexec.cfg` is never
-   freed, and config.cfg overwrites cvar defaults.** `host.c:796` runs
-   `Cbuf_Execute ()` inside `Host_Init`, before `host_hunklevel` is taken and
-   before `host_initialized` is set. A `map`/`load` executed there allocates
-   below the mark, so `Host_ClearMemory` never releases that level's hunk
-   memory. And `Cvar_Set` copies the value into `default_string` while
-   `host_initialized` is false, so "reset to defaults" restores the saved
-   config, not the defaults. Fix: take `host_hunklevel` and set
-   `host_initialized = true` before that `Cbuf_Execute`, not after.
-3. **`vis_changed` is never cleared.** `r_world.c:80`: stock FitzQuake has
-   `vis_changed = false;` after the early-return block; it is missing here.
-   Once `r_novis` or `r_oldskyleaf` has been changed, the surface chains are
-   rebuilt every frame for the rest of the session. (Cheap, about 0.1%, but
-   wrong.)
-4. **`-nosound` loses the saved sound settings.** `S_Init` (`snd_dma.c:162`)
-   returns before registering `volume`, `bgmvolume`, `sndspeed` and the rest.
-   `default.cfg` then prints `Unknown command "volume"`, and because
-   `Cvar_WriteVariables` only writes registered cvars, the next `config.cfg`
-   is saved without them. Fix: register the cvars before the `-nosound` test.
-5. **`Sys_Printf` can overflow its buffer, and the log is on and unbuffered by
-   default.** `sys_sdl.c:37`: `vsprintf` into `text[2048]`, but `Con_Printf`
-   passes messages of up to 4096 bytes. `gl_info` with NovaMesa's extension
-   list is about 2000 bytes, so it is close already. Also the `logfile` cvar
-   defaults to 1 and the file is opened with `setbuf(logfile, NULL)`, so every
-   console line is a separate DOS write, including pickup messages during
-   play. Fix: `vsnprintf` (or write `msg` directly), default `logfile` to 0 or
-   leave the stream buffered.
-6. **Sound mixing is fragile** (`snd_sdl.c`, `snd_dma.c`). It works as shipped,
-   by timing rather than by construction:
-   - `paint_audio` (SDL's audio task) and `S_Update_` (main task) both call
-     `S_PaintChannels`. `shm->samplepos` counts frames, but `GetSoundtime`
-     divides it by the channel count, so the main task believes time runs at
-     half speed and stops mixing after about 2048 frames. Until then both
-     tasks mix into the same buffers.
-   - `shm->buffer` is NULL until the first callback. A main-task mix before
-     that writes 4 K at address 0.
-   - `sfx_mixing_buffer` is a fixed 4096 bytes and `S_TransferStereo16` assumes
-     `len` is exactly 1024 frames and `paintedtime` is a multiple of it. A
-     backend that returns a different buffer size overruns it.
-   - `S_PaintChannels` can call `S_LoadSound` -> `Cache_Check`/`Cache_Alloc`
-     from the audio task while the main task is allocating.
+Bug fixes:
 
-   Fix: make `S_Update_` do nothing for this backend (SDLQuake does exactly
-   that), size the buffer and `shm->samples` from the first callback's `len`,
-   and bracket `S_StartSound`, `S_StopAllSounds` and level loading with
-   `SDL_LockAudio`/`SDL_UnlockAudio`.
-7. **`gl_affinemodels 1` changes the hint for everything.** `r_alias.c:538`
-   restores `GL_NICEST`, but this port's global setting is `GL_FASTEST`
-   (`gl_vidsdl.c:614`). Harmless if the global hint becomes `GL_NICEST` (see
-   below).
-8. Inherited from GLQuake, cosmetic: `gl_rlight.c:81` uses `v_blend[1]` where
-   `v_blend[0]` is meant. `snd_dma.c` writes `sndspeed.value` directly for
-   `-sndspeed`, leaving the cvar's string stale.
+1. **`+map`, `+timedemo` and other `+commands` were ignored with shareware
+   data.** `COM_CheckRegistered` (`common.c`) only set the `cmdline` cvar on
+   the registered path. It is now set before the test. Verified: `+map e1m2`
+   used to start the demo loop and now loads the map.
+2. **The first map loaded from the command line or `autoexec.cfg` was never
+   freed, and config.cfg overwrote cvar defaults.** `Host_Init` (`host.c`) ran
+   `quake.rc` before taking `host_hunklevel` and before setting
+   `host_initialized`. The mark and the flag are now set first, as in stock
+   Quake. Verified with gdb: the mark used to end up at 4.77 MB after
+   `map e1m1` and now stays at 0.73 MB across map changes.
+3. **`vis_changed` was never cleared** (`R_MarkSurfaces`, `r_world.c`), so one
+   change of `r_novis` or `r_oldskyleaf` rebuilt the surface chains every
+   frame from then on.
+4. **`-nosound` lost the saved sound settings.** `S_Init` (`snd_dma.c`)
+   returned before registering `volume`, `bgmvolume`, `sndspeed` and the rest,
+   so they were dropped from the next `config.cfg`. They are registered first
+   now.
+5. **`Sys_Printf` and `Sys_Error` could overflow their 2048-byte buffers**
+   (`sys_sdl.c`); both use `vsnprintf` now. Left alone on purpose: the
+   `logfile` cvar still defaults to 1 and the file is still unbuffered, so
+   every console line is one DOS write. That is the owner's choice between a
+   log that survives a crash and one that costs nothing.
+6. **Sound mixing** (`snd_sdl.c`, `snd_dma.c`, `snd_mix.c`):
+   - `paint_audio` paints into a ring of 8192 frames, the way Quake uses a DMA
+     buffer, and copies out whatever length SDL asks for. It used to assume
+     every callback asked for exactly 4096 bytes and overran its buffer
+     otherwise. The ring is allocated before the callback is installed, so
+     `shm->buffer` is never NULL.
+   - `S_Update_` no longer mixes from the main task (only `-simsound` uses it).
+     It used to race the callback for the first 2000 samples.
+   - `SNDDMA_Lock`/`SNDDMA_Unlock` (SDL's audio lock) are held while
+     `S_StartSound`, `S_StopSound`, `S_StopAllSounds`, `S_StaticSound` and the
+     spatialisation loop in `S_Update` change `channels[]`. Never hold it
+     across `S_LoadSound`; `S_StartSound` drops it around the load.
+   - The mixer no longer calls `S_LoadSound`. It reads `sfx->cache.data`
+     directly, and `S_Update` touches (and if needed reloads) the cache entry
+     of every active channel from the main task. `Cache_Check` relinks the
+     cache's LRU list, which the main task relinks too whenever it draws an
+     alias model, so doing it from the audio task could corrupt the list.
+   - `SND_PaintChannelFrom8/16` take the offset in `paintbuffer` to start at.
+     They always started at 0, so the part of a looping sound after its loop
+     point was mixed on top of the start of the block (an old id bug, fixed
+     the same way in later engines).
 
-In SDL-NovaMesa, noticed while reading (not this repository):
+   Verified with the harness's simulated audio device over all of demo1: the
+   mixer's output is byte-identical to the old code at the usual block size
+   apart from the 22 blocks (of 979) where the loop fix applies; the output
+   is identical however the same amount of audio is split into callbacks; and
+   AddressSanitizer is clean for block sizes from 4 to 40000 bytes. Not
+   tested: real AHI output, and the locking against a real second task.
+7. **The dlight view blend had the wrong colour** (`AddLightBlend`,
+   `gl_rlight.c`): red was computed from the green channel, a typo inherited
+   from GLQuake. Only visible with `gl_flashblend 1`, where the tint is now
+   orange instead of yellow-green.
+8. `gl_affinemodels 1` used to leave the hint at `GL_NICEST` while the rest of
+   the port used `GL_FASTEST`. Fixed by change 3 below; no code change in
+   `r_alias.c`.
 
-- `src/audio/SDL_audio.c:71`: `if (!audio->opened)` treats `AHI_OpenAudio`'s
-  failure value of -1 as success.
-- `src/timer/amigaos/SDL_systimer.c:117`: `SDL_GetTicks()` is `clock()`. **Worth
-  checking on the real toolchain:** if libnix implements `clock()` with
-  `DateStamp()`, its resolution is one tick, 20 ms. `Sys_FloatTime` feeds
-  `host_frametime` from it, so at 25-50 fps frame times would alternate between
-  20 and 40 ms and motion would judder even at a steady frame rate. Print a
-  few hundred consecutive `SDL_GetTicks()` values to find out. If so, use
-  `timer.device` (`ReadEClock` or `GetSysTime`), which SDL already has open.
+Not changed: `-sndspeed` still writes `sndspeed.value` directly. Going
+through `Cvar_Set` would save a command-line override into `config.cfg`.
 
-Also stock behaviour, not a bug: every `Con_Printf` while not fully connected
-calls `SCR_UpdateScreen`, so start-up and level loading draw and swap a full
-frame per console line.
+Rendering changes, none of which lowers quality:
 
-## Suggested changes in FitzQuake
+1. **`gl_flashblend` defaults to 0** (`gl_rmain.c`), as in stock FitzQuake.
+   Dynamic lights light the walls instead of being drawn as blended spheres
+   with a full-screen tint. -2.9% on demo1.
+2. **Sky state is set once per pass** (`Sky_DrawSkyLayers`, `gl_sky.c`), all
+   quads go into one `glBegin`, and the no-op `GL_BLEND` in the multitexture
+   branch is gone. Verified byte-identical in all three branches (default,
+   `-nomtex`, `r_skyalpha 0.5`). -7% sky cost, -4.2% of a sky-heavy frame.
+3. **The global hint is `GL_NICEST`** (`gl_vidsdl.c`). +0.2%. Over demo2 it
+   changes 2.5% of pixels, all on water surfaces (now perspective-correct);
+   the status bar and other 2D are byte-identical.
 
-No loss of visual quality:
+Together: demo1 30.87 G -> 30.02 G instructions.
 
-1. **Default `gl_flashblend` to 0** (`gl_rmain.c`). -2.9% in demo1, and it is
-   stock FitzQuake's default: dynamic lights light the walls instead of being
-   drawn as blended orange spheres. With 1, every shot the player fires also
-   triggers the full-screen blend, because the view is inside its own muzzle
-   flash.
-2. **Set the sky state once.** `Sky_DrawFaceQuad` rebinds both textures,
-   enables and disables unit 1, sets the env mode and toggles blending for
-   every quad, up to several hundred times a frame; each one makes Mesa
-   revalidate its state. Do it once in `Sky_DrawSky` and emit all quads inside
-   one `glBegin (GL_QUADS)`. Drop the `glEnable (GL_BLEND)` in the multitexture
-   branch: alpha is 1 after `GL_DECAL`, so the blend changes nothing. Measured:
-   byte-identical output, -7% sky cost, -4% frame in a sky-heavy view.
-3. **Use `GL_NICEST` as the global hint** (`gl_vidsdl.c:614`). Measured +0.2%.
-   NovaMesa's perspective front end already falls back to the affine loop for
-   triangles where the error is under half a pixel, so `GL_FASTEST` buys
-   nothing and costs visible warping on water, sprites and large polygons.
-4. `vid.numpages = 1` (`gl_vidsdl.c:291`). NovaMesa's back buffer is copied to
-   the window, never flipped, so the status bar and tile border only need
-   redrawing once after a change, not twice. About 0.5%.
+Still open, noticed while doing this:
 
-With a visual trade-off, for the owner to decide:
+- `vid.numpages = 1` (`gl_vidsdl.c`). NovaMesa's back buffer is copied to the
+  window, never flipped, so the status bar and tile border only need
+  redrawing once after a change, not twice. About 0.5%. Not applied.
+- **NovaMesa**, `src/tnl/t_imm_fixup.c:477`: `is_fan_like[]` has `GL_POLYGON+1`
+  entries and is indexed with `ctx->Driver.CurrentExecPrimitive`, which is
+  `PRIM_OUTSIDE_BEGIN_END` (`GL_POLYGON+1`) outside `glBegin`. It reads one
+  byte past the table on every flush outside a primitive. An old Mesa 4.1
+  bug, found by AddressSanitizer; the table needs three more `GL_FALSE`
+  entries.
+- **SDL-NovaMesa**, `src/audio/SDL_audio.c:71`: `if (!audio->opened)` treats
+  `AHI_OpenAudio`'s failure value of -1 as success.
+- **SDL-NovaMesa**, `src/timer/amigaos/SDL_systimer.c:117`: `SDL_GetTicks()` is
+  `clock()`. **Worth checking on the real toolchain:** if libnix implements
+  `clock()` with `DateStamp()`, its resolution is one tick, 20 ms.
+  `Sys_FloatTime` feeds `host_frametime` from it, so at 25-50 fps frame times
+  would alternate between 20 and 40 ms and motion would judder even at a
+  steady frame rate. Print a few hundred consecutive `SDL_GetTicks()` values
+  to find out. If so, use `timer.device` (`ReadEClock` or `GetSysTime`), which
+  SDL already has open.
+- Stock behaviour, not a bug: every `Con_Printf` while not fully connected
+  calls `SCR_UpdateScreen`, so start-up and level loading draw and swap a full
+  frame per console line.
+
+## Settings that trade appearance for speed
+
+For the owner to decide; none is applied.
 
 - **`viewsize`.** Cost is proportional to 3D pixels. `viewsize 90` is 19% fewer.
 - **`gl_polyblend 0`.** 6% on average, about 19% of every frame in which a
   flash is active, and continuously while underwater or holding a powerup.
 - **Sky.** `r_fastsky 1` removes most of the 61% the sky costs in an open view.
-  The two-pass variant above is -15% of such a frame for slightly different
-  pixels. `r_sky_quality` (default 12) sets the quad count.
+  Drawing the two cloud layers as two passes instead of multitextured is -15%
+  of such a frame for slightly different pixels. `r_sky_quality` (default 12)
+  sets the quad count.
 - `gl_overbright_models 0` and `gl_fullbrights 0`: 1.4% and 1.8%. Not worth
   the loss on a PiStorm; more under a software FPU.
 - Keep `gl_texturemode` at its default, `GL_NEAREST_MIPMAP_NEAREST`.
@@ -368,6 +388,7 @@ by the Amiga build.
     PROFILE=1 ./run.sh "gl_polyblend 0\ntimedemo demo1"
     QUITFRAMES=150 PROFILE=1 ./run.sh "map e1m5\n+lookup"    # sky-heavy view
     DUMPEVERY=60 DUMPPREFIX=before ./run.sh "timedemo demo1" # PPM screenshots
+    SOUND=1 AUDIODUMP=/tmp/a.raw ./run.sh "timedemo demo1"   # run the sound mixer too
 
 - `sdl_stub.c` stands in for SDL and SDL_mixer and creates the NovaMesa
   context; `host_main.c` replaces `amiga_main.c` and `sys_file_amiga.c`;
@@ -381,6 +402,20 @@ by the Amiga build.
   can go in parallel.
 - Wall-clock differences under about 5% are lost in noise on a shared
   machine; use `PROFILE=1`. One profiled demo takes about five minutes.
-- Commands go through `id1/autoexec.cfg` because of bug 1 above.
+- Comparing screenshots between two builds: every console line printed during
+  start-up costs one buffer swap, so builds that print a different number of
+  lines are out of step by that many frames. `DUMPOFFSET=n` shifts the frame
+  numbering of one run to line them up. Frames with particles or explosions
+  can still differ, because `rand()` is called once per frame.
+- With `SOUND=1 AUDIODUMP=file` the stub pretends the audio device opened and
+  calls the engine's mixer callback from the frame loop, writing its 16-bit
+  stereo output to the file. `AUDIOLEN=a,b,...` sets the block sizes asked for
+  each frame. Two builds can be compared byte for byte, and any split of the
+  same total must give the same output. The stub also reports an audio lock
+  left held across a frame. `CC="gcc -m32 -fsanitize=address"` works for the
+  engine; NovaMesa trips it at start-up (see "Still open"), so reuse
+  uninstrumented Mesa objects.
+- Commands go through `id1/autoexec.cfg`, which works with any data. (`+cmd`
+  on the command line works too since bug fix 1.)
 - It is a little-endian x86 build. It says nothing about big-endian
   correctness; NovaMesa's own m68k/qemu benchmark covers that for the library.
