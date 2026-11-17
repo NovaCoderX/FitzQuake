@@ -24,6 +24,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 static quakeparms_t quakeparms; 
 
 static FILE* logfile = NULL;
+
+// NOVA: the console log is buffered. It used to be unbuffered, which made
+// every console line a separate write to disk, and disk writes are slow on a
+// 68k. The buffer goes to disk when it fills, before shutting down, and
+// before a fatal error is handled; only a hard crash loses what is in it.
+static char logbuffer[8192];
 extern cvar_t logfile_active;
 
 
@@ -42,7 +48,7 @@ void Sys_Printf(char *message, ...)
         if (!logfile) {
             logfile = fopen("q_console.txt", "w");
             if (logfile) {
-                setbuf(logfile, NULL);
+                setvbuf(logfile, logbuffer, _IOFBF, sizeof(logbuffer)); // NOVA: was setbuf(logfile, NULL)
             }
         }
         
@@ -61,6 +67,11 @@ void Sys_Error(char *message, ...)
     va_start (argptr, message);
     vsnprintf (text, sizeof(text), message, argptr); // NOVA: bounded
     va_end (argptr);
+
+    // NOVA: get the buffered console log onto disk before anything else
+    if (logfile) {
+        fflush(logfile);
+    }
 
     errorLogfile = fopen("q_error.txt", "w");
     if (errorLogfile) {
@@ -137,6 +148,12 @@ static void Sys_Init(void)
 
 void Sys_Quit(int exitCode)
 {
+	// NOVA: the log is buffered now; write it out before shutting down, in
+	// case the shutdown itself goes wrong
+	if (logfile) {
+		fflush(logfile);
+	}
+
 	Host_Shutdown();
 
 	if (quakeparms.membase) {
