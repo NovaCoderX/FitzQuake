@@ -511,12 +511,19 @@ Handles cursor positioning, line wrapping, etc
 ================
 */
 #define	MAXPRINTMSG	4096
+
+//NOVA -- shortest time, in seconds, between two screen refreshes forced by
+//        Con_Printf while not in a game (see the end of the function)
+#define	CON_REFRESH_INTERVAL	0.1
+
 // FIXME: make a buffer size safe vsprintf?
 void Con_Printf (char *fmt, ...)
 {
 	va_list		argptr;
 	char		msg[MAXPRINTMSG];
 	static qboolean	inupdate;
+	static double	lastupdate = -1; //NOVA
+	double		now; //NOVA
 
 	va_start (argptr,fmt);
 	vsprintf (msg,fmt,argptr);
@@ -545,9 +552,22 @@ void Con_Printf (char *fmt, ...)
 	// Con_Printd
 		if (!inupdate)
 		{
-			inupdate = true;
-			SCR_UpdateScreen ();
-			inupdate = false;
+			//NOVA -- this used to redraw and swap the whole screen for every
+			//        line printed: once per line of start-up output, and a
+			//        few hundred times for something like "cvarlist" typed
+			//        at the console. With a software renderer each of those
+			//        is a full frame. It is now done at most once per
+			//        CON_REFRESH_INTERVAL, counted from the end of the last
+			//        one. A line that is skipped shows up with the next
+			//        refresh or the next normal frame.
+			now = Sys_FloatTime ();
+			if (lastupdate < 0 || now < lastupdate || now - lastupdate >= CON_REFRESH_INTERVAL)
+			{
+				inupdate = true;
+				SCR_UpdateScreen ();
+				inupdate = false;
+				lastupdate = Sys_FloatTime ();
+			}
 		}
 	}
 }
