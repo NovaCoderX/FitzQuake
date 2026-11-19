@@ -394,9 +394,7 @@ single matrix per entity (`R_EntityMatrix`), per-model vertex colour table for
 alias models, texture chains bucketed by lightmap so `GL_Bind` de-duplicates
 binds.
 
-## Application to Mesa notes
-
-Useful details of how the FitzQuake state maps to Mesa:
+## Details of how the FitzQuake state maps to NovaMesa
 
 - Its world pass is unit 0 REPLACE plus unit 1 lightmap, MODULATE or
   COMBINE x2 when `gl_overbright` is on — the dualtex case.
