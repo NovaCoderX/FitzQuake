@@ -9,6 +9,10 @@
 #   DUMPEVERY=60 DUMPPREFIX=before ./run.sh "..."     PPM screenshots, for diffing two builds
 #   SOUND=1 AUDIODUMP=/tmp/a.raw ./run.sh "..."       run the sound mixer too and save its output
 #   FRAMEHASH=/tmp/a.txt ./run.sh "..."              one hash per frame; diff two builds' files
+#   MODEL=1 BIN=out/fq_m060 MODELFROM=100 ./run.sh "timedemo demo1"
+#                                   a 68k build under NovaMesa's test/emu68model
+#                                   harness (Musashi + a model of Emu68): counts
+#                                   from swap 100 to the end and prints the report
 #
 # Put pak0.pak (shareware is fine) in run/id1/ first. The commands go into
 # id1/autoexec.cfg; anything after the first argument is passed to the engine
@@ -22,7 +26,10 @@ cd "$D"
 SND="-nosound"; [ -n "$SOUND" ] && SND=""   # SOUND=1 with AUDIODUMP=file: see sdl_stub.c
 ARGS="$SND -nocdaudio -width ${W:-320} -height ${H:-240} $*"
 export FAKECLOCK=${FAKECLOCK:-50}
-if [ -n "$PROFILE" ]; then
+NM=${NOVAMESA:-$HERE/../../../NovaMesa}
+if [ -n "$MODEL" ]; then
+  "$NM/test/emu68model/work/harness" ${MODELOPTS:--f} "$HERE/$BIN" $ARGS
+elif [ -n "$PROFILE" ]; then
   valgrind --tool=callgrind --callgrind-out-file=callgrind.out "$HERE/$BIN" $ARGS > log.txt 2>&1
   echo "$(grep -E 'frames|quit after' log.txt | tail -1) | instructions: $(grep Collected log.txt | awk '{print $NF}')"
   echo "profile: callgrind_annotate --inclusive=yes $D/callgrind.out | less"

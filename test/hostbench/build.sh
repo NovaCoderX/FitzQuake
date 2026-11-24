@@ -5,6 +5,8 @@
 #   ./build.sh                      -> out/fq
 #   NOVAMESA=/path/to/NovaMesa TAG=test ./build.sh    -> out/fq_test
 #   FQSRC=/path/to/other/src TAG=exp ./build.sh       build a modified copy of the engine
+#   CC="m68k-linux-gnu-gcc -m68060 -fno-optimize-sibling-calls" LDFLAGS=-static TAG=m060 ./build.sh
+#                                   68k code, to run under NovaMesa's test/emu68model (MODEL=1 run.sh)
 #
 # Needs gcc with 32-bit support (Ubuntu: gcc-multilib). Quake's progs and
 # texture code store pointers in ints, so it must be a 32-bit build.
@@ -30,7 +32,7 @@ for f in $SRC/*.c $SRC/swrast/*.c $SRC/swrast_setup/*.c $SRC/tnl/*.c $SRC/math/*
   while [ "$(jobs -r | wc -l)" -ge "$(nproc)" ]; do sleep 0.05; done
 done
 wait
-$CC -c $MFLAGS -I$HERE/stub $HERE/sdl_stub.c -o $QOBJ/sdl_stub.o
+$CC -c $MFLAGS -I$HERE/stub -I$NM/test/emu68model $HERE/sdl_stub.c -o $QOBJ/sdl_stub.o
 $CC -c $QFLAGS $HERE/host_main.c -o $QOBJ/host_main.o
 for f in $FQ/*.c; do
   b=$(basename "$f" .c); case $b in amiga_main|sys_file_amiga) continue;; esac
@@ -40,5 +42,5 @@ for f in $FQ/*.c; do
 done
 wait
 OUT=$HERE/out/fq; [ "$TAG" = host ] || OUT=$HERE/out/fq_$TAG
-$CC -g "$QOBJ"/*.o "$MOBJ"/*.o -lm -Wl,--wrap=Con_Printf -o "$OUT"
+$CC -g "$QOBJ"/*.o "$MOBJ"/*.o -lm -Wl,--wrap=Con_Printf $LDFLAGS -o "$OUT"
 echo "built $OUT"

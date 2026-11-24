@@ -23,6 +23,9 @@
 //   AUDIOLEN=a,b,.. sizes in bytes of the blocks asked for each frame, one
 //                   callback per entry (default 4096). Any split of the same
 //                   total must give the same output
+//   MODELFROM=n     under NovaMesa's test/emu68model harness (68k build):
+//   MODELTO=m       count swaps n+1..m in the model of Emu68 (to the end of
+//                   the run if MODELTO is not set). No effect elsewhere
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -33,6 +36,9 @@
 #include "amiga_mesa_def.h"
 #include <SDL/SDL.h>
 #include <SDL/SDL_mixer.h>
+#ifdef __m68k__
+#include "model.h"
+#endif
 
 unsigned swap_sink;		// written by the stub p96WritePixelArray
 static AMesaContext *actx;
@@ -110,6 +116,10 @@ void SDL_GL_SwapBuffers(void)
 	const char *d = getenv("DUMPEVERY");
 	int dumpoffset = getenv("DUMPOFFSET") ? atoi(getenv("DUMPOFFSET")) : 0;
 	frameno++; fake_ms += fake_step;
+#ifdef __m68k__
+	if (getenv("MODELFROM") && frameno == atoi(getenv("MODELFROM"))) model_begin();
+	if (getenv("MODELTO") && frameno == atoi(getenv("MODELTO"))) model_end("frames");
+#endif
 	run_audio();
 	if (getenv("FRAMEHASH")) {
 		static FILE *hf; unsigned h = 2166136261u, *p = (unsigned*)actx->back_buffer; int i;
