@@ -370,10 +370,22 @@ The lightmap prototype measured earlier in this file (filter every 4th pixel)
 was not what went in: over more frames it was wrong by up to 25/255 under
 dynamic lights. The exact per-texel version replaced it.
 
-What is left there is small: sharing the perspective divide between the two
-units, and writing pixels straight from the texturing loops. The sky is still
-expensive for its size because it is several hundred small quads a frame;
-`r_sky_quality` controls how many.
+NovaMesa's sixth round (its `CLAUDE.md`):
+
+| Change | demo1 | Image |
+|---|---|---|
+| Perspective runs shortened where they misplaced texels (the warping the owner saw) | +3.0% x86 and modelled; both together -20% for the whole demo in the model | texels within 1/4 pixel of exact; they were off by up to about 4 pixels on walls close up at a glancing angle |
+| Branches the PiStorm's JIT guesses wrong taken out of the world loop | -1.1% x86; -22% in the Emu68 model | identical |
+
+The second one came from running FitzQuake itself as 68k code under a model
+of Emu68 (`MODEL=1`, below), which showed the world loop paying for about
+five wrongly guessed branches a pixel. Nothing of it has been timed on a
+PiStorm yet: `timedemo demo1` there, before and after, is the check.
+
+What the model says is left is mostly in that same loop (gcc's code for it,
+a candidate for assembler) and in per-span set-up; see NovaMesa's "Ideas not
+done yet". The sky is still expensive for its size because it is several
+hundred small quads a frame; `r_sky_quality` controls how many.
 
 ## Measured and not worth doing
 
@@ -470,3 +482,20 @@ by the Amiga build.
   on the command line works too since bug fix 1.)
 - It is a little-endian x86 build. It says nothing about big-endian
   correctness; NovaMesa's own m68k/qemu benchmark covers that for the library.
+- **68k build under the Emu68 model.** With the m68k cross compiler
+  (`gcc-13-m68k-linux-gnu`; see NovaMesa's `test/emu68model/README.md` for
+  installing it next to `gcc-multilib`):
+
+      CC="m68k-linux-gnu-gcc -m68060 -fno-optimize-sibling-calls" LDFLAGS=-static TAG=m060 ./build.sh
+      MODEL=1 BIN=out/fq_m060 MODELFROM=100 QUITFRAMES=200 ./run.sh "timedemo demo1"   # about a minute
+      MODEL=1 BIN=out/fq_m060 MODELFROM=2 ./run.sh "timedemo demo1"                    # whole demo, ~15 min
+
+  `MODELFROM`/`MODELTO` pick the swaps counted (`sdl_stub.c`). The report
+  gives modelled PiStorm time, instructions, wrongly guessed branches,
+  float work and the costliest functions; `PCHIST=file` plus NovaMesa's
+  `test/emu68model/pclines.py out/fq_m060 file` breaks it down by source
+  line. Frames come out byte for byte as under `qemu-m68k`, so `FRAMEHASH`
+  and `DUMPEVERY` work as usual. Modelled whole demo1 at 320x240: 32.6 ms a frame before NovaMesa's sixth
+  round, 26.1 ms after (with `FRAMEHASH` on, which adds about 0.25 ms). The
+  model has no caches or memory timing, so treat those as a ranking, not a
+  frame rate, until a PiStorm `timedemo` confirms them.
